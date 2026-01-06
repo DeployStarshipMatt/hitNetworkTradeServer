@@ -81,22 +81,22 @@ class TradingBot(commands.Bot):
     
     async def on_ready(self):
         """Called when bot is ready."""
-        logger.info(f'✅ Bot logged in as {self.user.name} (ID: {self.user.id})')
-        logger.info(f'📡 Monitoring channel ID: {DISCORD_CHANNEL_ID}')
-        logger.info(f'🔗 Trading Server: {TRADING_SERVER_URL}')
+        logger.info(f'Bot logged in as {self.user.name} (ID: {self.user.id})')
+        logger.info(f'Monitoring channel ID: {DISCORD_CHANNEL_ID}')
+        logger.info(f'Trading Server: {TRADING_SERVER_URL}')
         
         # Test connection to trading server
         health = self.trading_client.health_check()
         if health.get('status') == 'healthy':
-            logger.info(f"✅ Trading Server is reachable")
+            logger.info(f"Trading Server is reachable")
         else:
-            logger.warning(f"⚠️ Trading Server health check failed: {health}")
+            logger.warning(f"Trading Server health check failed: {health}")
         
         # Set bot status
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="for trade signals 📊"
+                name="for trade signals"
             )
         )
     
@@ -134,59 +134,21 @@ class TradingBot(commands.Bot):
                 return
             
             self.stats['signals_detected'] += 1
-            logger.info(f"📊 Signal detected from {message.author.name}: {signal.symbol} {signal.side}")
-            
-            # Add reaction to show processing
-            await message.add_reaction('⏳')
+            logger.info(f"Signal detected from {message.author.name}: {signal.symbol} {signal.side}")
             
             # Send to trading server
             response = self.trading_client.send_signal(signal)
             
             if response.success:
                 self.stats['signals_sent'] += 1
-                
-                # Success - update reaction and send confirmation
-                await message.remove_reaction('⏳', self.user)
-                await message.add_reaction('✅')
-                
-                confirmation = (
-                    f"✅ **Trade Executed**\n"
-                    f"Symbol: `{signal.symbol}`\n"
-                    f"Side: `{signal.side.upper()}`\n"
-                    f"Entry: `{signal.entry_price or 'Market'}`\n"
-                    f"SL: `{signal.stop_loss or 'N/A'}`\n"
-                    f"TP: `{signal.take_profit or 'N/A'}`"
-                )
-                
-                if response.order_id:
-                    confirmation += f"\nOrder ID: `{response.order_id}`"
-                
-                await message.reply(confirmation)
-                logger.info(f"✅ Signal executed successfully: {response.order_id}")
+                logger.info(f"Signal executed successfully: {response.order_id}")
                 
             else:
                 self.stats['signals_failed'] += 1
-                
-                # Failure - update reaction and send error
-                await message.remove_reaction('⏳', self.user)
-                await message.add_reaction('❌')
-                
-                error_msg = (
-                    f"❌ **Trade Failed**\n"
-                    f"Reason: {response.message}\n"
-                    f"Error Code: `{response.error_code or 'UNKNOWN'}`"
-                )
-                
-                await message.reply(error_msg)
-                logger.error(f"❌ Signal execution failed: {response.message}")
+                logger.error(f"Signal execution failed: {response.message}")
         
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
-            try:
-                await message.add_reaction('⚠️')
-                await message.reply(f"⚠️ Error processing signal: {str(e)}")
-            except:
-                pass
         
         # Process commands (if any)
         await self.process_commands(message)
