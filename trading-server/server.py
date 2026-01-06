@@ -1,0 +1,369 @@
+"""
+Trading Server - Main Application
+
+FastAPI server that receives trade signals and executes on BloFin.
+Self-contained service with REST API.
+"""
+from fastapi import FastAPI, HTTPException, Security, Depends
+from fastapi.security import APIKeyHeader
+from fastapi.responses import JSONResponse
+import logging
+import os
+from dotenv import load_dotenv
+import sys
+from pathlib import Path
+from datetime import datetime
+from typing import Optional
+
+# Add parent directory to path for shared imports
+sys.path.append(str(Path(__file__).parent.parent))
+
+from blofin_client import BloFinClient
+from shared.models import TradeSignal, TradeResponse, HealthCheck
+
+# Load environment variables
+load_dotenv()
+
+# Configuration
+HOST = os.getenv('HOST', '0.0.0.0')
+PORT = int(os.getenv('PORT', 8000))
+API_KEY = os.getenv('API_KEY')
+
+# BloFin Configuration
+BLOFIN_API_KEY = os.getenv('BLOFIN_API_KEY')
+BLOFIN_SECRET_KEY = os.getenv('BLOFIN_SECRET_KEY')
+BLOFIN_PASSPHRASE = os.getenv('BLOFIN_PASSPHRASE')
+BLOFIN_BASE_URL = os.getenv('BLOFIN_BASE_URL', 'https://demo-trading-openapi.blofin.com')
+
+# Trading Configuration
+DEFAULT_TRADE_MODE = os.getenv('DEFAULT_TRADE_MODE', 'cross')
+MAX_POSITION_SIZE_USD = float(os.getenv('MAX_POSITION_SIZE_USD', 1000))
+RISK_PER_TRADE_PERCENT = float(os.getenv('RISK_PER_TRADE_PERCENT', 1))
+
+# Logging
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+LOG_FILE = os.getenv('LOG_FILE', 'trading_server.log')
+
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Trading Server",
+    description="Receives trade signals and executes on BloFin",
+    version="1.0.0"
+)
+
+# API Key authentication
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def verify_api_key(api_key: str = Security(api_key_header)):
+    """Verify API key from request."""
+    if not API_KEY:
+        logger.warning("API_KEY not configured - allowing all requests")
+        return True
+    
+    if api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    return True
+
+
+# Initialize BloFin client
+blofin_client: Optional[BloFinClient] = None
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services on startup."""
+    global blofin_client
+    
+    logger.info("🚀 Starting Trading Server...")
+    logger.info(f"📡 BloFin API: {BLOFIN_BASE_URL}")
+    
+    # Validate BloFin credentials
+    if not all([BLOFIN_API_KEY, BLOFIN_SECRET_KEY, BLOFIN_PASSPHRASE]):
+        logger.error("❌ BloFin credentials not configured!")
+        logger.warning("⚠️ Server will start but trading will fail")
+    else:
+        try:
+            blofin_client = BloFinClient(
+                api_key=BLOFIN_API_KEY,
+                secret_key=BLOFIN_SECRET_KEY,
+                passphrase=BLOFIN_PASSPHRASE,
+                base_url=BLOFIN_BASE_URL
+            )
+            logger.info("✅ BloFin client initialized")
+            
+            # Test connection (optional - comment out if causing issues)
+            # balance = blofin_client.get_account_balance()
+            # logger.info(f"✅ BloFin connection verified")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize BloFin client: {e}")
+            blofin_client = None
+
+
+@app.get("/")
+async def root():
+    """Root endpoint."""
+    return {
+        "service": "Trading Server",
+        "version": "1.0.0",
+        "status": "running"
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    health_status = "healthy"
+    details = {}
+    
+    # Check BloFin client
+    if not blofin_client:
+        health_status = "degraded"
+        details['blofin'] = "not_initialized"
+    else:
+        details['blofin'] = "connected"
+        details['stats'] = blofin_client.get_stats()
+    
+    health = HealthCheck(
+        service="trading-server",
+        status=health_status,
+        timestamp=datetime.utcnow().isoformat(),
+        details=details
+    )
+    
+    return health.to_dict()
+
+
+@app.post("/api/v1/trade")
+async def execute_trade(
+    signal: dict,
+    authenticated: bool = Depends(verify_api_key)
+) -> dict:
+    """
+    Execute trade signal.
+    
+    Args:
+        signal: TradeSignal data
+        authenticated: Authentication status
+        
+    Returns:
+        TradeResponse
+    """
+    try:
+        # Parse signal
+        trade_signal = TradeSignal.from_dict(signal)
+        logger.info(f"📊 Received signal: {trade_signal.symbol} {trade_signal.side}")
+        
+        # Validate signal
+        is_valid, error = trade_signal.validate()
+        if not is_valid:
+            logger.warning(f"❌ Invalid signal: {error}")
+            return TradeResponse(
+                success=False,
+                signal_id=trade_signal.signal_id,
+                message=f"Invalid signal: {error}",
+                status="rejected",
+                error_code="VALIDATION_ERROR"
+            ).to_dict()
+        
+        # Check if BloFin client is available
+        if not blofin_client:
+            logger.error("❌ BloFin client not initialized")
+            return TradeResponse(
+                success=False,
+                signal_id=trade_signal.signal_id,
+                message="Trading service unavailable",
+                status="failed",
+                error_code="SERVICE_UNAVAILABLE"
+            ).to_dict()
+        
+        # Calculate position size based on account balance
+        try:
+            position_size = trade_signal.size
+            
+            if not position_size:
+                # Get account balance
+                balance_info = blofin_client.get_account_balance()
+                
+                # Extract available balance (USDT)
+                available_balance = 0
+                if balance_info and 'data' in balance_info:
+                    for balance in balance_info['data']:
+                        if balance.get('ccy') == 'USDT':
+                            available_balance = float(balance.get('availBal', 0))
+                            break
+                
+                if available_balance > 0:
+                    # Calculate 1% risk position size
+                    risk_amount = available_balance * (RISK_PER_TRADE_PERCENT / 100)
+                    
+                    # For futures, size is in contracts
+                    # Assuming 1 contract ≈ entry price in USDT
+                    if trade_signal.entry_price:
+                        position_size = risk_amount / trade_signal.entry_price
+                    else:
+                        position_size = risk_amount / 1000  # Conservative fallback
+                    
+                    logger.info(f"💰 Account balance: ${available_balance:.2f}, Risk: {RISK_PER_TRADE_PERCENT}%, Position size: {position_size:.4f}")
+                else:
+                    position_size = 0.01  # Minimum fallback
+                    logger.warning(f"⚠️ Could not get balance, using minimum size: {position_size}")
+        
+        except Exception as e:
+            logger.warning(f"⚠️ Position sizing failed: {e}, using default 0.01")
+            position_size = 0.01
+        
+        # Execute order
+        try:
+            # Determine order type
+            if trade_signal.entry_price:
+                # Limit order
+                order_result = blofin_client.place_limit_order(
+                    symbol=trade_signal.symbol,
+                    side=trade_signal.side,
+                    size=position_size,
+                    price=trade_signal.entry_price,
+                    trade_mode=DEFAULT_TRADE_MODE
+                )
+            else:
+                # Market order
+                order_result = blofin_client.place_market_order(
+                    symbol=trade_signal.symbol,
+                    side=trade_signal.side,
+                    size=position_size,
+                    trade_mode=DEFAULT_TRADE_MODE
+                )
+            
+            order_id = order_result.get('order_id')
+            
+            # Set stop loss if provided
+            if trade_signal.stop_loss:
+                try:
+                    # Determine opposite side for SL
+                    sl_side = "sell" if trade_signal.side in ["long", "buy"] else "buy"
+                    blofin_client.set_stop_loss(
+                        symbol=trade_signal.symbol,
+                        side=sl_side,
+                        size=position_size,
+                        trigger_price=trade_signal.stop_loss,
+                        trade_mode=DEFAULT_TRADE_MODE
+                    )
+                    logger.info(f"✅ Stop loss set @ {trade_signal.stop_loss}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to set stop loss: {e}")
+            
+            # Set take profit if provided
+            if trade_signal.take_profit:
+                try:
+                    # Determine opposite side for TP
+                    tp_side = "sell" if trade_signal.side in ["long", "buy"] else "buy"
+                    blofin_client.set_take_profit(
+                        symbol=trade_signal.symbol,
+                        side=tp_side,
+                        size=position_size,
+                        trigger_price=trade_signal.take_profit,
+                        trade_mode=DEFAULT_TRADE_MODE
+                    )
+                    logger.info(f"✅ Take profit set @ {trade_signal.take_profit}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to set take profit: {e}")
+            
+            # Success response
+            logger.info(f"✅ Trade executed: {order_id}")
+            return TradeResponse(
+                success=True,
+                signal_id=trade_signal.signal_id,
+                order_id=order_id,
+                message="Trade executed successfully",
+                status="executed",
+                executed_at=datetime.utcnow().isoformat()
+            ).to_dict()
+        
+        except Exception as e:
+            logger.error(f"❌ Order execution failed: {e}")
+            return TradeResponse(
+                success=False,
+                signal_id=trade_signal.signal_id,
+                message=f"Order execution failed: {str(e)}",
+                status="failed",
+                error_code="EXECUTION_ERROR",
+                error_details=str(e)
+            ).to_dict()
+    
+    except Exception as e:
+        logger.error(f"❌ Unexpected error: {e}", exc_info=True)
+        return TradeResponse(
+            success=False,
+            message=f"Internal server error: {str(e)}",
+            status="failed",
+            error_code="INTERNAL_ERROR"
+        ).to_dict()
+
+
+@app.get("/api/v1/stats")
+async def get_stats(authenticated: bool = Depends(verify_api_key)):
+    """Get trading statistics."""
+    if not blofin_client:
+        return {"error": "BloFin client not initialized"}
+    
+    return blofin_client.get_stats()
+
+
+@app.get("/api/v1/balance")
+async def get_balance(authenticated: bool = Depends(verify_api_key)):
+    """Get account balance."""
+    if not blofin_client:
+        raise HTTPException(status_code=503, detail="BloFin client not initialized")
+    
+    try:
+        balance = blofin_client.get_account_balance()
+        return balance
+    except Exception as e:
+        logger.error(f"Failed to get balance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/positions")
+async def get_positions(authenticated: bool = Depends(verify_api_key)):
+    """Get open positions."""
+    if not blofin_client:
+        raise HTTPException(status_code=503, detail="BloFin client not initialized")
+    
+    try:
+        positions = blofin_client.get_positions()
+        return {"positions": positions}
+    except Exception as e:
+        logger.error(f"Failed to get positions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def main():
+    """Main entry point."""
+    import uvicorn
+    
+    # Validate critical configuration
+    if not API_KEY:
+        logger.warning("⚠️ API_KEY not set - authentication disabled!")
+    
+    logger.info(f"🚀 Starting server on {HOST}:{PORT}")
+    
+    uvicorn.run(
+        app,
+        host=HOST,
+        port=PORT,
+        log_level=LOG_LEVEL.lower()
+    )
+
+
+if __name__ == "__main__":
+    main()
