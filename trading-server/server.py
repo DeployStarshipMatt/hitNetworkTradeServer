@@ -662,8 +662,13 @@ async def get_account_status(authenticated: bool = Depends(verify_api_key)):
             # Get current market price (using mark price from position data)
             current_price = float(pos.get('markPrice', entry_price))
             
-            # Calculate P&L
-            pnl = float(pos.get('upl', 0))
+            # Calculate P&L manually
+            # For SHORT: profit when price goes down, loss when price goes up
+            # For LONG: profit when price goes up, loss when price goes down
+            if size < 0:  # SHORT position
+                pnl = abs(size) * (entry_price - current_price)
+            else:  # LONG position
+                pnl = size * (current_price - entry_price)
             
             # Calculate P&L percentage
             notional = abs(size) * entry_price
