@@ -85,12 +85,44 @@ class TradingBot(commands.Bot):
         logger.info(f'Monitoring channel ID: {DISCORD_CHANNEL_ID}')
         logger.info(f'Trading Server: {TRADING_SERVER_URL}')
         
+        # Check if bot can access the monitoring channel
+        try:
+            channel = self.get_channel(DISCORD_CHANNEL_ID)
+            if channel is None:
+                # Try fetching it
+                channel = await self.fetch_channel(DISCORD_CHANNEL_ID)
+            
+            if channel:
+                # Test if we can read messages
+                try:
+                    # Try to fetch recent messages to verify read permission
+                    async for msg in channel.history(limit=1):
+                        break
+                    logger.info(f"✅ Successfully verified access to channel: {channel.name}")
+                except discord.Forbidden:
+                    logger.error(f"❌ CRITICAL: Bot cannot read messages from channel {DISCORD_CHANNEL_ID}")
+                    logger.error(f"   Channel name: {channel.name}")
+                    logger.error(f"   Missing permission: Read Message History")
+                    logger.error(f"   ACTION REQUIRED: Add bot to channel or grant permissions")
+                except Exception as e:
+                    logger.error(f"❌ Error accessing channel {DISCORD_CHANNEL_ID}: {e}")
+            else:
+                logger.error(f"❌ CRITICAL: Cannot find channel {DISCORD_CHANNEL_ID}")
+                logger.error(f"   Bot may not be in the server or channel doesn't exist")
+                logger.error(f"   ACTION REQUIRED: Invite bot to server or verify channel ID")
+                
+        except discord.NotFound:
+            logger.error(f"❌ CRITICAL: Channel {DISCORD_CHANNEL_ID} not found")
+            logger.error(f"   Bot is not in the server or channel doesn't exist")
+        except Exception as e:
+            logger.error(f"❌ Error checking channel access: {e}")
+        
         # Test connection to trading server
         health = self.trading_client.health_check()
         if health.get('status') == 'healthy':
-            logger.info(f"Trading Server is reachable")
+            logger.info(f"✅ Trading Server is reachable")
         else:
-            logger.warning(f"Trading Server health check failed: {health}")
+            logger.warning(f"⚠️ Trading Server health check failed: {health}")
         
         # Set bot status
         await self.change_presence(
