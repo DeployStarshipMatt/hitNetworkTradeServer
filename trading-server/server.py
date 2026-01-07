@@ -42,6 +42,9 @@ MAX_LEVERAGE = int(os.getenv('MAX_LEVERAGE', 20))
 MAX_POSITION_SIZE_USD = float(os.getenv('MAX_POSITION_SIZE_USD', 1000))
 RISK_PER_TRADE_PERCENT = float(os.getenv('RISK_PER_TRADE_PERCENT', 1))
 
+# Discord Notifications
+DISCORD_NOTIFICATION_WEBHOOK = os.getenv('DISCORD_NOTIFICATION_WEBHOOK')
+
 # Logging
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 LOG_FILE = os.getenv('LOG_FILE', 'trading_server.log')
@@ -175,6 +178,82 @@ def calculate_position_size_and_leverage(
                 f"Risk=${risk_amount:.2f}, Size={position_size:.4f}, Leverage={leverage}x, Value=${position_value:.2f}")
     
     return position_size, leverage
+
+
+def send_discord_notification(
+    symbol: str,
+    side: str,
+    entry_price: Optional[float],
+    stop_loss: Optional[float],
+    take_profit: Optional[float],
+    position_size: float,
+    leverage: int,
+    order_id: str,
+    position_value: float
+):
+    """
+    Send trade notification to Discord via webhook.
+    
+    Args:
+        symbol: Trading pair
+        side: long/short
+        entry_price: Entry price
+        stop_loss: Stop loss price
+        take_profit: Take profit price
+        position_size: Position size in contracts
+        leverage: Leverage used
+        order_id: Order ID from exchange
+        position_value: Total position value in USD
+    """
+    if not DISCORD_NOTIFICATION_WEBHOOK:
+        return  # No webhook configured, skip
+    
+    try:
+        # Determine emoji based on side
+        side_emoji = "📈" if side.lower() in ["long", "buy"] else "📉"
+        
+        # Build notification message
+        embed = {
+            "title": f"{side_emoji} Trade Executed: {symbol}",
+            "color": 3066993 if side.lower() in ["long", "buy"] else 15158332,  # Green for long, red for short
+            "fields": [
+                {"name": "Side", "value": side.upper(), "inline": True},
+                {"name": "Leverage", "value": f"{leverage}x", "inline": True},
+                {"name": "Size", "value": f"{position_size:.4f} contracts", "inline": True},
+                {"name": "Position Value", "value": f"${position_value:.2f}", "inline": True},
+            ],
+            "footer": {"text": f"Order ID: {order_id}"},
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        # Add price fields if available
+        if entry_price:
+            embed["fields"].insert(1, {"name": "Entry Price", "value": f"${entry_price:.2f}", "inline": True})
+        if stop_loss:
+            embed["fields"].append({"name": "🛑 Stop Loss", "value": f"${stop_loss:.2f}", "inline": True})
+        if take_profit:
+            embed["fields"].append({"name": "🎯 Take Profit", "value": f"${take_profit:.2f}", "inline": True})
+        
+        # Send webhook
+        payload = {
+            "embeds": [embed],
+            "username": "Trading Bot",
+            "avatar_url": "https://cdn-icons-png.flaticon.com/512/2830/2830284.png"
+        }
+        
+        response = requests.post(
+            DISCORD_NOTIFICATION_WEBHOOK,
+            json=payload,
+            timeout=5
+        )
+        
+        if response.status_code == 204:
+            logger.info("✅ Discord notification sent")
+        else:
+            logger.warning(f"⚠️ Discord notification failed: {response.status_code}")
+            
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to send Discord notification: {e}")
 
 
 @app.get("/")
@@ -366,6 +445,20 @@ async def execute_trade(
                     logger.info(f"✅ Take profit set @ {trade_signal.take_profit}")
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to set take profit: {e}")
+            
+            # Send Discord notification
+            position_value = position_size * (trade_signal.entry_price or 0)
+            send_discord_notification(
+                symbol=trade_signal.symbol,
+                side=trade_signal.side,
+                entry_price=trade_signal.entry_price,
+                stop_loss=trade_signal.stop_loss,
+                take_profit=trade_signal.take_profit,
+                position_size=position_size,
+                leverage=leverage,
+                order_id=order_id,
+                position_value=position_value
+            )
             
             # Success response
             logger.info(f"✅ Trade executed: {order_id}")
