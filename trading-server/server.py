@@ -633,6 +633,62 @@ async def get_positions(authenticated: bool = Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/v1/account/status")
+async def get_account_status(authenticated: bool = Depends(verify_api_key)):
+    """Get complete account status for monitoring."""
+    if not blofin_client:
+        raise HTTPException(status_code=503, detail="BloFin client not initialized")
+    
+    try:
+        # Get balance
+        balance_data = blofin_client.get_account_balance()
+        details = balance_data.get('details', [{}])[0]
+        available = float(details.get('available', 0))
+        equity = float(details.get('equity', 0))
+        
+        # Get positions
+        positions = blofin_client.get_positions()
+        
+        # Format position data with current prices and P&L
+        formatted_positions = []
+        for pos in positions:
+            size = float(pos.get('positions', 0))
+            if size == 0:
+                continue
+            
+            symbol = pos['instId']
+            entry_price = float(pos['averagePrice'])
+            
+            # Get current market price (using mark price from position data)
+            current_price = float(pos.get('markPrice', entry_price))
+            
+            # Calculate P&L
+            pnl = float(pos.get('upl', 0))
+            
+            # Calculate P&L percentage
+            notional = abs(size) * entry_price
+            pnl_percent = (pnl / notional * 100) if notional > 0 else 0
+            
+            formatted_positions.append({
+                'symbol': symbol,
+                'size': size,
+                'entry_price': entry_price,
+                'current_price': current_price,
+                'pnl': pnl,
+                'pnl_percent': pnl_percent
+            })
+        
+        return {
+            'available_balance': available,
+            'total_equity': equity,
+            'positions': formatted_positions,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Failed to get account status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 def main():
     """Main entry point."""
     import uvicorn

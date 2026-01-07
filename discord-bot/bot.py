@@ -5,12 +5,13 @@ Monitors Discord channel for trade signals and forwards to Trading Server.
 Self-contained service that can run independently.
 """
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import logging
 import os
 from dotenv import load_dotenv
 import sys
 from pathlib import Path
+import requests
 
 # Add parent directory to path for shared imports
 sys.path.append(str(Path(__file__).parent.parent))
@@ -101,9 +102,74 @@ class TradingBot(commands.Bot):
         except Exception as e:
             logger.error(f"Failed to send webhook notification: {e}")
     
+    @tasks.loop(minutes=15)
+    async def status_update_task(self):
+        """Post account status to webhook every 15 minutes."""
+        try:
+            # Get account data from trading server
+            response = requests.get(
+                f"{TRADING_SERVER_URL}/api/v1/account/status",
+                headers={"X-API-Key": TRADING_SERVER_API_KEY},
+                timeout=10
+            )
+            
+            if response.status_code != 200:
+                logger.warning(f"Failed to get account status: {response.status_code}")
+                return
+            
+            data = response.json()
+            
+            # Format positions
+            positions_text = ""
+            if data.get('positions'):
+                for pos in data['positions']:
+                    if float(pos.get('size', 0)) != 0:
+                        side = "LONG" if float(pos['size']) > 0 else "SHORT"
+                        size = abs(float(pos['size']))
+                        entry = float(pos['entry_price'])
+                        current = float(pos['current_price'])
+                        pnl = float(pos['pnl'])
+                        pnl_pct = float(pos['pnl_percent'])
+                        
+                        pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+                        positions_text += f"{pnl_emoji} **{pos['symbol']}** {side}\n"
+                        positions_text += f"   Size: {size} | Entry: ${entry:.4f}\n"
+                        positions_text += f"   P&L: ${pnl:.2f} ({pnl_pct:+.2f}%)\n\n"
+            
+            if not positions_text:
+                positions_text = "No open positions"
+            
+            # Send webhook
+            await self.send_webhook_notification(
+                title="📊 Account Status Update",
+                description=f"**Balance:** ${data.get('available_balance', 0):.2f}\n**Equity:** ${data.get('total_equity', 0):.2f}",
+                color=0x3498db,  # Blue
+                fields=[
+                    {"name": "Open Positions", "value": positions_text[:1024], "inline": False}
+                ]
+            )
+            
+            logger.info("Posted status update to webhook")
+            
+        except Exception as e:
+            logger.error(f"Error in status update task: {e}")
+    
+    @status_update_task.before_loop
+    async def before_status_update(self):
+        """Wait for bot to be ready before starting status updates."""
+        await self.wait_until_ready()
+        logger.info("Starting 15-minute status update task")
+    
+    async def close(self):
+        """Cleanup when bot shuts down."""
+        self.status_update_task.cancel()
+        await super().close()
+    
     async def setup_hook(self):
         """Called when bot is starting up."""
         logger.info("Bot is starting up...")
+        # Start periodic status updates
+        self.status_update_task.start()
     
     async def on_ready(self):
         """Called when bot is ready."""
