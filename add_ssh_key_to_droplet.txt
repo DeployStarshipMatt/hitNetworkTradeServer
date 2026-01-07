@@ -1,0 +1,3 @@
+# Copy and run this command in your Digital Ocean console:
+
+echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExWHlccnc6ZkKNOJd8nKo1hRql6Vf8ep/kIacFUlury yahke-trading-bot" >> ~/.ssh/authorized_keys

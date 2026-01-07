@@ -53,6 +53,9 @@ class BloFinClient:
         
         self.session = requests.Session()
         
+        # Cache for instrument specifications
+        self._instrument_cache = {}
+        
         self.stats = {
             'orders_placed': 0,
             'orders_failed': 0,
@@ -129,6 +132,77 @@ class BloFinClient:
             logger.error(f"Request failed: {e}")
             raise Exception(f"Request failed: {str(e)}")
     
+    def get_instrument_info(self, symbol: str) -> Dict[str, Any]:
+        """
+        Get instrument specifications (min size, lot size, etc.)
+        Cached to avoid repeated API calls.
+        
+        Args:
+            symbol: Trading pair (e.g., BTC-USDT)
+            
+        Returns:
+            Instrument specification dict with minSize, lotSize, etc.
+        """
+        # Check cache first
+        if symbol in self._instrument_cache:
+            return self._instrument_cache[symbol]
+        
+        try:
+            instruments = self._request("GET", "/api/v1/market/instruments", {"instType": "SWAP"})
+            
+            for inst in instruments:
+                if inst.get('instId') == symbol:
+                    spec = {
+                        'minSize': float(inst.get('minSize', 1)),
+                        'lotSize': float(inst.get('lotSize', 1)),
+                        'tickSize': float(inst.get('tickSize', 0.01)),
+                        'contractType': inst.get('contractType'),
+                        'instId': symbol
+                    }
+                    # Cache it
+                    self._instrument_cache[symbol] = spec
+                    logger.info(f"Instrument {symbol}: minSize={spec['minSize']}, lotSize={spec['lotSize']}")
+                    return spec
+            
+            # Not found, return defaults
+            logger.warning(f"Instrument {symbol} not found, using defaults")
+            return {'minSize': 1.0, 'lotSize': 1.0, 'tickSize': 0.01, 'instId': symbol}
+            
+        except Exception as e:
+            logger.warning(f"Failed to get instrument info for {symbol}: {e}, using defaults")
+            return {'minSize': 1.0, 'lotSize': 1.0, 'tickSize': 0.01, 'instId': symbol}
+    
+    def round_size_to_lot(self, symbol: str, size: float) -> float:
+        """
+        Round position size according to instrument lot size.
+        
+        Args:
+            symbol: Trading pair
+            size: Desired position size
+            
+        Returns:
+            Rounded size that meets lot size requirements
+        """
+        spec = self.get_instrument_info(symbol)
+        lot_size = spec['lotSize']
+        min_size = spec['minSize']
+        
+        # Round to nearest lot size increment
+        rounded = round(size / lot_size) * lot_size
+        
+        # Ensure minimum size
+        if rounded < min_size:
+            rounded = min_size
+            logger.warning(f"Position size {size} below minimum {min_size}, using {rounded}")
+        
+        # For lot sizes >= 1, return as integer
+        if lot_size >= 1:
+            return int(rounded)
+        
+        # Otherwise round to appropriate decimal places
+        decimals = len(str(lot_size).split('.')[-1]) if '.' in str(lot_size) else 0
+        return round(rounded, decimals)
+    
     def place_market_order(self, symbol: str, side: str, size: float, 
                           trade_mode: str = "cross") -> Dict[str, Any]:
         """
@@ -151,16 +225,19 @@ class BloFinClient:
         else:
             raise ValueError(f"Invalid side: {side}")
         
+        # Round size according to instrument specifications
+        rounded_size = self.round_size_to_lot(symbol, size)
+        
         payload = {
             "instId": symbol,
             "marginMode": trade_mode,
             "positionSide": "net",  # Required: net for One-way Mode, long/short for Hedge Mode
             "side": api_side,
             "orderType": "market",
-            "size": str(size)
+            "size": str(rounded_size)
         }
         
-        logger.info(f"Placing market order: {api_side} {size} {symbol}")
+        logger.info(f"Placing market order: {api_side} {rounded_size} {symbol} (requested: {size})")
         
         try:
             response = self._request("POST", "/api/v1/trade/order", payload)
@@ -212,17 +289,20 @@ class BloFinClient:
         else:
             raise ValueError(f"Invalid side: {side}")
         
+        # Round size according to instrument specifications
+        rounded_size = self.round_size_to_lot(symbol, size)
+        
         payload = {
             "instId": symbol,
             "marginMode": trade_mode,
             "positionSide": "net",  # Required: net for One-way Mode, long/short for Hedge Mode
             "side": api_side,
             "orderType": "limit",
-            "size": str(size),
+            "size": str(rounded_size),
             "price": str(price)
         }
         
-        logger.info(f"Placing limit order: {api_side} {size} {symbol} @ {price}")
+        logger.info(f"Placing limit order: {api_side} {rounded_size} {symbol} @ {price} (requested: {size})")
         
         try:
             response = self._request("POST", "/api/v1/trade/order", payload)
@@ -255,7 +335,7 @@ class BloFinClient:
     def set_stop_loss(self, symbol: str, side: str, size: float, trigger_price: float,
                      trade_mode: str = "cross") -> Dict[str, Any]:
         """
-        Set stop loss order.
+        Set stop loss order using algo order endpoint.
         
         Args:
             symbol: Trading pair
@@ -267,22 +347,29 @@ class BloFinClient:
         Returns:
             Order response
         """
+        # Round size according to instrument specifications
+        rounded_size = self.round_size_to_lot(symbol, size)
+        
         payload = {
             "instId": symbol,
-            "tdMode": trade_mode,
+            "marginMode": trade_mode,
+            "positionSide": "net",
             "side": side,
-            "ordType": "stop_market",
-            "sz": str(size),
-            "triggerPx": str(trigger_price)
+            "orderType": "trigger",
+            "size": str(rounded_size),
+            "orderPrice": "-1",
+            "triggerPrice": str(trigger_price),
+            "triggerPriceType": "mark",
+            "reduceOnly": "true"
         }
         
-        logger.info(f"Setting stop loss: {symbol} @ {trigger_price}")
+        logger.info(f"Setting stop loss: {symbol} @ {trigger_price} (size: {rounded_size}, requested: {size})")
         
         try:
-            response = self._request("POST", "/api/v1/trade/order", payload)
-            order_id = response.get('ordId')
-            logger.info(f"✅ Stop loss set: {order_id}")
-            return {'order_id': order_id, 'type': 'stop_loss'}
+            response = self._request("POST", "/api/v1/trade/order-algo", payload)
+            algo_id = response.get('algoId')
+            logger.info(f"✅ Stop loss set: {algo_id}")
+            return {'order_id': algo_id, 'type': 'stop_loss'}
         
         except Exception as e:
             logger.error(f"❌ Failed to set stop loss: {e}")
@@ -291,7 +378,7 @@ class BloFinClient:
     def set_take_profit(self, symbol: str, side: str, size: float, trigger_price: float,
                        trade_mode: str = "cross") -> Dict[str, Any]:
         """
-        Set take profit order.
+        Set take profit order using algo order endpoint.
         
         Args:
             symbol: Trading pair
@@ -303,22 +390,29 @@ class BloFinClient:
         Returns:
             Order response
         """
+        # Round size according to instrument specifications
+        rounded_size = self.round_size_to_lot(symbol, size)
+        
         payload = {
             "instId": symbol,
-            "tdMode": trade_mode,
+            "marginMode": trade_mode,
+            "positionSide": "net",
             "side": side,
-            "ordType": "stop_market",
-            "sz": str(size),
-            "triggerPx": str(trigger_price)
+            "orderType": "trigger",
+            "size": str(rounded_size),
+            "orderPrice": "-1",
+            "triggerPrice": str(trigger_price),
+            "triggerPriceType": "mark",
+            "reduceOnly": "true"
         }
         
-        logger.info(f"Setting take profit: {symbol} @ {trigger_price}")
+        logger.info(f"Setting take profit: {symbol} @ {trigger_price} (size: {rounded_size}, requested: {size})")
         
         try:
-            response = self._request("POST", "/api/v1/trade/order", payload)
-            order_id = response.get('ordId')
-            logger.info(f"✅ Take profit set: {order_id}")
-            return {'order_id': order_id, 'type': 'take_profit'}
+            response = self._request("POST", "/api/v1/trade/order-algo", payload)
+            algo_id = response.get('algoId')
+            logger.info(f"✅ Take profit set: {algo_id}")
+            return {'order_id': algo_id, 'type': 'take_profit'}
         
         except Exception as e:
             logger.error(f"❌ Failed to set take profit: {e}")
