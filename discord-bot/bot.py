@@ -81,6 +81,7 @@ class TradingBot(commands.Bot):
     async def send_webhook_notification(self, title: str, description: str, color: int, fields: list = None):
         """Send notification to Discord webhook."""
         if not DISCORD_NOTIFICATION_WEBHOOK:
+            logger.warning("No webhook URL configured")
             return
         
         try:
@@ -94,13 +95,22 @@ class TradingBot(commands.Bot):
             if fields:
                 embed["fields"] = fields
             
+            logger.debug(f"Sending webhook to {DISCORD_NOTIFICATION_WEBHOOK[:50]}...")
+            
             async with aiohttp.ClientSession() as session:
-                await session.post(
+                response = await session.post(
                     DISCORD_NOTIFICATION_WEBHOOK,
                     json={"embeds": [embed]}
                 )
+                
+                if response.status == 204:
+                    logger.debug("Webhook sent successfully")
+                else:
+                    response_text = await response.text()
+                    logger.error(f"Webhook returned status {response.status}: {response_text}")
+                    
         except Exception as e:
-            logger.error(f"Failed to send webhook notification: {e}")
+            logger.error(f"Failed to send webhook notification: {e}", exc_info=True)
     
     @tasks.loop(minutes=15)
     async def status_update_task(self):
