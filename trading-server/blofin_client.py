@@ -132,6 +132,61 @@ class BloFinClient:
             logger.error(f"Request failed: {e}")
             raise Exception(f"Request failed: {str(e)}")
     
+    def calculate_position_size(self, symbol: str, entry_price: float, stop_loss: float, 
+                                risk_percent: float = 1.0) -> Dict[str, Any]:
+        """
+        Calculate position size for specified account risk, ignoring signal leverage.
+        
+        Args:
+            symbol: Trading pair
+            entry_price: Entry price
+            stop_loss: Stop loss price
+            risk_percent: Percent of account to risk (default 1.0)
+            
+        Returns:
+            Dict with size, margin_needed, and calculated info
+        """
+        # Get account balance
+        balance_data = self.get_account_balance()
+        if not balance_data or 'details' not in balance_data:
+            raise Exception("Could not fetch account balance")
+        
+        available = float(balance_data['details'][0].get('available', 0))
+        
+        # Calculate risk amount (1% of account)
+        risk_amount = available * (risk_percent / 100)
+        
+        # Calculate risk per unit
+        risk_per_unit = abs(entry_price - stop_loss)
+        
+        if risk_per_unit == 0:
+            raise ValueError("Entry price and stop loss cannot be the same")
+        
+        # Calculate raw position size
+        raw_size = risk_amount / risk_per_unit
+        
+        # Round to lot size
+        rounded_size = self.round_size_to_lot(symbol, raw_size)
+        
+        # Calculate actual notional value
+        notional = rounded_size * entry_price
+        
+        # We'll use 2x leverage for safety (can adjust per symbol)
+        default_leverage = 2
+        margin_needed = notional / default_leverage
+        
+        return {
+            'size': rounded_size,
+            'raw_size': raw_size,
+            'notional_value': notional,
+            'margin_needed': margin_needed,
+            'leverage': default_leverage,
+            'risk_amount': risk_amount,
+            'risk_percent': risk_percent,
+            'available_balance': available,
+            'risk_per_unit': risk_per_unit
+        }
+    
     def get_instrument_info(self, symbol: str) -> Dict[str, Any]:
         """
         Get instrument specifications (min size, lot size, etc.)
@@ -332,7 +387,7 @@ class BloFinClient:
             logger.error(f"❌ Failed to place limit order: {e}")
             raise
     
-    def set_stop_loss(self, symbol: str, side: str, size: float, trigger_price: float,
+    def set_stop_loss(self, symbol: str, side: str, trigger_price: float, size: float,
                      trade_mode: str = "cross") -> Dict[str, Any]:
         """
         Set stop loss order using algo order endpoint.
@@ -340,8 +395,8 @@ class BloFinClient:
         Args:
             symbol: Trading pair
             side: Order side (opposite of position)
-            size: Order size
             trigger_price: Stop loss trigger price
+            size: Order size
             trade_mode: cross or isolated
             
         Returns:
@@ -375,7 +430,7 @@ class BloFinClient:
             logger.error(f"❌ Failed to set stop loss: {e}")
             raise
     
-    def set_take_profit(self, symbol: str, side: str, size: float, trigger_price: float,
+    def set_take_profit(self, symbol: str, side: str, trigger_price: float, size: float,
                        trade_mode: str = "cross") -> Dict[str, Any]:
         """
         Set take profit order using algo order endpoint.
@@ -383,8 +438,8 @@ class BloFinClient:
         Args:
             symbol: Trading pair
             side: Order side (opposite of position)
-            size: Order size
             trigger_price: Take profit trigger price
+            size: Order size
             trade_mode: cross or isolated
             
         Returns:
