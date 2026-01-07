@@ -28,13 +28,13 @@ class SignalParser:
     # Pattern library - easily add new formats
     PATTERNS = {
         # Pattern 1: Trading Signal Alert format (YOUR FORMAT)
-        # Example: "📝PAIR: FIL/USDT ... SIDE: LONG📈 ... 📍ENTRY: 1.295222 ✖️SL: 1.220152 TP1: 1.337893"
+        # Example: "📝PAIR: SEI/USDT #1131 ... SIDE: __SHORT📉__ ... 📍ENTRY: `0.125294` ✖️SL: `0.127698` TP1: `0.123615`"
         'trading_signal_alert': re.compile(
-            r'PAIR[:\s]+(?P<symbol>[A-Z]+/USDT).*?'
-            r'SIDE[:\s]+(?P<side>LONG|SHORT)(?:📈|📉)?.*?'
-            r'ENTRY[:\s]+(?P<entry>[\d.]+).*?'
-            r'SL[:\s]+(?P<sl>[\d.]+).*?'
-            r'TP1[:\s]+(?P<tp>[\d.]+)',
+            r'PAIR[:\s*]+(?P<symbol>[A-Z]+/USDT)(?:\s*#\d+)?.*?'
+            r'SIDE[:\s*]+[_*]*(?P<side>LONG|SHORT)[📈📉_*]*.*?'
+            r'ENTRY[:\s*]+`?(?P<entry>[\d.]+)`?.*?'
+            r'SL[:\s*]+`?(?P<sl>[\d.]+)`?.*?'
+            r'TP1[:\s*]+`?(?P<tp>[\d.]+)`?',
             re.IGNORECASE | re.DOTALL
         ),
         
