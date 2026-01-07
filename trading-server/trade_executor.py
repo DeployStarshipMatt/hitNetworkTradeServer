@@ -35,6 +35,7 @@ class TradeExecutor:
     def execute_trade(self, symbol: str, side: str, entry_price: float, 
                      stop_loss: float, take_profit: float, 
                      risk_percent: float = 1.0,
+                     leverage: int = 10,
                      use_3tier_tp: bool = False) -> Dict[str, Any]:
         """
         Execute a complete trade with SL/TP.
@@ -45,7 +46,8 @@ class TradeExecutor:
             entry_price: Entry price (for calculation, market order executes at current)
             stop_loss: Stop loss price
             take_profit: Take profit price (or TP1 if using 3-tier)
-            risk_percent: Percent of account to risk (default 1.0)
+            risk_percent: Percent of EQUITY to risk (default 1.0)
+            leverage: Leverage to use (default 10x)
             use_3tier_tp: If True, assumes take_profit is TP1 and creates 3 levels
             
         Returns:
@@ -59,22 +61,28 @@ class TradeExecutor:
             # 1. Validate inputs
             self._validate_trade_params(symbol, side, entry_price, stop_loss, take_profit)
             
-            # 2. Calculate position size for 1% risk
+            # 2. Set leverage for the symbol
+            logger.info(f"Setting leverage to {leverage}x for {symbol}...")
+            self.client.set_leverage(symbol, leverage)
+            
+            # 3. Calculate position size for 1% risk based on TOTAL EQUITY
             size_info = self.client.calculate_position_size(
                 symbol=symbol,
                 entry_price=entry_price,
                 stop_loss=stop_loss,
-                risk_percent=risk_percent
+                risk_percent=risk_percent,
+                leverage=leverage
             )
             
             logger.info(f"Position Sizing:")
+            logger.info(f"  Total Equity: ${size_info['total_equity']:.2f}")
             logger.info(f"  Available Balance: ${size_info['available_balance']:.2f}")
-            logger.info(f"  Risk Amount: ${size_info['risk_amount']:.4f} ({risk_percent}%)")
+            logger.info(f"  Risk Amount: ${size_info['risk_amount']:.4f} ({risk_percent}% of equity)")
             logger.info(f"  Position Size: {size_info['size']} (from {size_info['raw_size']:.4f})")
             logger.info(f"  Notional Value: ${size_info['notional_value']:.2f}")
             logger.info(f"  Margin Needed: ${size_info['margin_needed']:.2f} @ {size_info['leverage']}x")
             
-            # 3. Place market order
+            # 4. Place market order
             order_side = "buy" if side.lower() == "long" else "sell"
             logger.info(f"\nPlacing market order: {order_side.upper()} {size_info['size']} {symbol}...")
             

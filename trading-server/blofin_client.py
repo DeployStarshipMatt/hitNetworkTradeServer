@@ -133,15 +133,17 @@ class BloFinClient:
             raise Exception(f"Request failed: {str(e)}")
     
     def calculate_position_size(self, symbol: str, entry_price: float, stop_loss: float, 
-                                risk_percent: float = 1.0) -> Dict[str, Any]:
+                                risk_percent: float = 1.0, leverage: int = 10) -> Dict[str, Any]:
         """
         Calculate position size for specified account risk, ignoring signal leverage.
+        Uses TOTAL EQUITY for risk calculation to ensure positions don't oversize.
         
         Args:
             symbol: Trading pair
             entry_price: Entry price
             stop_loss: Stop loss price
-            risk_percent: Percent of account to risk (default 1.0)
+            risk_percent: Percent of EQUITY to risk (default 1.0)
+            leverage: Leverage to use (default 10x for more available margin)
             
         Returns:
             Dict with size, margin_needed, and calculated info
@@ -151,10 +153,12 @@ class BloFinClient:
         if not balance_data or 'details' not in balance_data:
             raise Exception("Could not fetch account balance")
         
+        # Use TOTAL EQUITY, not available balance
+        equity = float(balance_data['details'][0].get('equity', 0))
         available = float(balance_data['details'][0].get('available', 0))
         
-        # Calculate risk amount (1% of account)
-        risk_amount = available * (risk_percent / 100)
+        # Calculate risk amount (1% of EQUITY, not available)
+        risk_amount = equity * (risk_percent / 100)
         
         # Calculate risk per unit
         risk_per_unit = abs(entry_price - stop_loss)
@@ -171,18 +175,18 @@ class BloFinClient:
         # Calculate actual notional value
         notional = rounded_size * entry_price
         
-        # We'll use 2x leverage for safety (can adjust per symbol)
-        default_leverage = 2
-        margin_needed = notional / default_leverage
+        # Use specified leverage (default 10x for more available margin)
+        margin_needed = notional / leverage
         
         return {
             'size': rounded_size,
             'raw_size': raw_size,
             'notional_value': notional,
             'margin_needed': margin_needed,
-            'leverage': default_leverage,
+            'leverage': leverage,
             'risk_amount': risk_amount,
             'risk_percent': risk_percent,
+            'total_equity': equity,
             'available_balance': available,
             'risk_per_unit': risk_per_unit
         }
