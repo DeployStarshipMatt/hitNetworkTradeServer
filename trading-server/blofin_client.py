@@ -166,7 +166,13 @@ class BloFinClient:
             response = self._request("POST", "/api/v1/trade/order", payload)
             self.stats['orders_placed'] += 1
             
-            order_id = response.get('ordId')
+            # Response is a list of orders, get the first one
+            if isinstance(response, list) and len(response) > 0:
+                order_data = response[0]
+            else:
+                order_data = response
+            
+            order_id = order_data.get('ordId') if isinstance(order_data, dict) else None
             logger.info(f"✅ Order placed successfully: {order_id}")
             
             return {
@@ -222,7 +228,13 @@ class BloFinClient:
             response = self._request("POST", "/api/v1/trade/order", payload)
             self.stats['orders_placed'] += 1
             
-            order_id = response.get('ordId')
+            # Response is a list of orders, get the first one
+            if isinstance(response, list) and len(response) > 0:
+                order_data = response[0]
+            else:
+                order_data = response
+            
+            order_id = order_data.get('ordId') if isinstance(order_data, dict) else None
             logger.info(f"✅ Limit order placed: {order_id}")
             
             return {
