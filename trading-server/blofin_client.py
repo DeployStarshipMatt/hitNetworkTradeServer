@@ -214,12 +214,12 @@ class BloFinClient:
         
         payload = {
             "instId": symbol,
+            "marginMode": trade_mode,
             "positionSide": "net",  # Required: net for One-way Mode, long/short for Hedge Mode
-            "tdMode": trade_mode,
             "side": api_side,
-            "ordType": "limit",
-            "sz": str(size),
-            "px": str(price)
+            "orderType": "limit",
+            "size": str(size),
+            "price": str(price)
         }
         
         logger.info(f"Placing limit order: {api_side} {size} {symbol} @ {price}")
@@ -384,8 +384,8 @@ class BloFinClient:
         """
         payload = {
             "instId": symbol,
-            "lever": str(leverage),
-            "mgnMode": margin_mode
+            "leverage": str(leverage),
+            "marginMode": margin_mode
         }
         
         logger.info(f"Setting leverage: {symbol} to {leverage}x ({margin_mode})")

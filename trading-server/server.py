@@ -14,6 +14,9 @@ import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+import json
+import threading
+import time
 
 # Add parent directory to path for shared imports
 sys.path.append(str(Path(__file__).parent.parent))
@@ -44,6 +47,10 @@ RISK_PER_TRADE_PERCENT = float(os.getenv('RISK_PER_TRADE_PERCENT', 1))
 
 # Discord Notifications
 DISCORD_NOTIFICATION_WEBHOOK = os.getenv('DISCORD_NOTIFICATION_WEBHOOK')
+
+# Supported Pairs
+PAIRS_FILE = os.path.join(os.path.dirname(__file__), 'blofin_pairs.json')
+PAIRS_UPDATE_INTERVAL = 86400  # 24 hours in seconds
 
 # Logging
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
@@ -84,6 +91,52 @@ def verify_api_key(api_key: str = Security(api_key_header)):
 # Initialize BloFin client
 blofin_client: Optional[BloFinClient] = None
 
+# Supported pairs cache
+supported_pairs = set()
+
+def load_supported_pairs():
+    """Load supported pairs from cache file"""
+    global supported_pairs
+    try:
+        if os.path.exists(PAIRS_FILE):
+            with open(PAIRS_FILE, 'r') as f:
+                data = json.load(f)
+                supported_pairs = set(data.get('pairs', []))
+                logger.info(f"📋 Loaded {len(supported_pairs)} supported trading pairs")
+                return True
+        else:
+            logger.warning("⚠️ Pairs file not found, fetching from API...")
+            update_supported_pairs()
+            return True
+    except Exception as e:
+        logger.error(f"Failed to load pairs: {e}")
+        return False
+
+def update_supported_pairs():
+    """Update supported pairs from BloFin API"""
+    try:
+        import subprocess
+        logger.info("🔄 Updating supported pairs from BloFin API...")
+        result = subprocess.run(
+            [sys.executable, os.path.join(os.path.dirname(__file__), 'fetch_blofin_pairs.py')],
+            capture_output=True,
+            text=True,
+            cwd=os.path.dirname(__file__)
+        )
+        if result.returncode == 0:
+            load_supported_pairs()
+            logger.info("✅ Pairs updated successfully")
+        else:
+            logger.error(f"Failed to update pairs: {result.stderr}")
+    except Exception as e:
+        logger.error(f"Error updating pairs: {e}")
+
+def pairs_update_worker():
+    """Background worker to update pairs daily"""
+    while True:
+        time.sleep(PAIRS_UPDATE_INTERVAL)
+        update_supported_pairs()
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup."""
@@ -113,6 +166,14 @@ async def startup_event():
         except Exception as e:
             logger.error(f"❌ Failed to initialize BloFin client: {e}")
             blofin_client = None
+    
+    # Load supported trading pairs
+    load_supported_pairs()
+    
+    # Start background worker for daily pairs update
+    update_thread = threading.Thread(target=pairs_update_worker, daemon=True)
+    update_thread.start()
+    logger.info("🔄 Started daily pairs update worker")
 
 
 def calculate_position_size_and_leverage(
@@ -189,7 +250,8 @@ def send_discord_notification(
     position_size: float,
     leverage: int,
     order_id: str,
-    position_value: float
+    position_value: float,
+    error_message: Optional[str] = None
 ):
     """
     Send trade notification to Discord via webhook.
@@ -204,19 +266,34 @@ def send_discord_notification(
         leverage: Leverage used
         order_id: Order ID from exchange
         position_value: Total position value in USD
+        error_message: Error message if trade failed
     """
     if not DISCORD_NOTIFICATION_WEBHOOK:
         return  # No webhook configured, skip
     
     try:
-        # Determine emoji based on side
-        side_emoji = "📈" if side.lower() in ["long", "buy"] else "📉"
-        
-        # Build notification message
-        embed = {
-            "title": f"{side_emoji} Trade Executed: {symbol}",
-            "color": 3066993 if side.lower() in ["long", "buy"] else 15158332,  # Green for long, red for short
-            "fields": [
+        # If error message, send error notification
+        if error_message:
+            embed = {
+                "title": f"⚠️ Trade Rejected: {symbol}",
+                "description": error_message,
+                "color": 15844367,  # Yellow/orange for warning
+                "fields": [
+                    {"name": "Symbol", "value": symbol, "inline": True},
+                    {"name": "Side", "value": side.upper(), "inline": True},
+                ],
+                "timestamp": datetime.utcnow().isoformat(),
+                "footer": {"text": "BloFin Trading Bot"}
+            }
+        else:
+            # Determine emoji based on side
+            side_emoji = "📈" if side.lower() in ["long", "buy"] else "📉"
+            
+            # Build notification message
+            embed = {
+                "title": f"{side_emoji} Trade Executed: {symbol}",
+                "color": 3066993 if side.lower() in ["long", "buy"] else 15158332,  # Green for long, red for short
+                "fields": [
                 {"name": "Side", "value": side.upper(), "inline": True},
                 {"name": "Leverage", "value": f"{leverage}x", "inline": True},
                 {"name": "Size", "value": f"{position_size:.4f} contracts", "inline": True},
@@ -320,6 +397,33 @@ async def execute_trade(
                 message=f"Invalid signal: {error}",
                 status="rejected",
                 error_code="VALIDATION_ERROR"
+            ).to_dict()
+        
+        # Check if trading pair is supported
+        if supported_pairs and trade_signal.symbol not in supported_pairs:
+            error_msg = f"Exchange does not support {trade_signal.symbol}. Available pairs: {len(supported_pairs)}"
+            logger.warning(f"⚠️ {error_msg}")
+            
+            # Send Discord notification about unsupported pair
+            send_discord_notification(
+                symbol=trade_signal.symbol,
+                side=trade_signal.side,
+                entry_price=trade_signal.entry_price,
+                stop_loss=trade_signal.stop_loss,
+                take_profit=trade_signal.take_profit,
+                position_size=0,
+                leverage=0,
+                order_id="N/A",
+                position_value=0,
+                error_message=error_msg
+            )
+            
+            return TradeResponse(
+                success=False,
+                signal_id=trade_signal.signal_id,
+                message=error_msg,
+                status="rejected",
+                error_code="UNSUPPORTED_PAIR"
             ).to_dict()
         
         # Check if BloFin client is available
