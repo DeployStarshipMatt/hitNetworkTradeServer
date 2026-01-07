@@ -82,6 +82,17 @@ class TradeExecutor:
             logger.info(f"  Notional Value: ${size_info['notional_value']:.2f}")
             logger.info(f"  Margin Needed: ${size_info['margin_needed']:.2f} @ {size_info['leverage']}x")
             
+            # CRITICAL: Check if we have enough margin available
+            if size_info['margin_needed'] > size_info['available_balance']:
+                margin_shortage = size_info['margin_needed'] - size_info['available_balance']
+                logger.error(f"❌ INSUFFICIENT MARGIN!")
+                logger.error(f"   Need: ${size_info['margin_needed']:.2f}")
+                logger.error(f"   Have: ${size_info['available_balance']:.2f}")
+                logger.error(f"   Short: ${margin_shortage:.2f}")
+                raise Exception(f"Insufficient margin: need ${size_info['margin_needed']:.2f}, only ${size_info['available_balance']:.2f} available")
+            
+            logger.info(f"  ✅ Margin check passed (${size_info['available_balance']:.2f} available)")
+            
             # 4. Place market order
             order_side = "buy" if side.lower() == "long" else "sell"
             logger.info(f"\nPlacing market order: {order_side.upper()} {size_info['size']} {symbol}...")

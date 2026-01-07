@@ -18,6 +18,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from parser import SignalParser
 from trading_client import TradingServerClient
 from shared.models import TradeSignal
+import aiohttp
 
 # Load environment variables
 load_dotenv()
@@ -25,6 +26,7 @@ load_dotenv()
 # Configuration
 DISCORD_BOT_TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 DISCORD_CHANNEL_ID = int(os.getenv('DISCORD_CHANNEL_ID', 0))
+DISCORD_NOTIFICATION_WEBHOOK = os.getenv('DISCORD_NOTIFICATION_WEBHOOK')
 TRADING_SERVER_URL = os.getenv('TRADING_SERVER_URL', 'http://localhost:8000')
 TRADING_SERVER_API_KEY = os.getenv('TRADING_SERVER_API_KEY')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
@@ -74,6 +76,30 @@ class TradingBot(commands.Bot):
             'signals_sent': 0,
             'signals_failed': 0
         }
+    
+    async def send_webhook_notification(self, title: str, description: str, color: int, fields: list = None):
+        """Send notification to Discord webhook."""
+        if not DISCORD_NOTIFICATION_WEBHOOK:
+            return
+        
+        try:
+            embed = {
+                "title": title,
+                "description": description,
+                "color": color,
+                "timestamp": discord.utils.utcnow().isoformat()
+            }
+            
+            if fields:
+                embed["fields"] = fields
+            
+            async with aiohttp.ClientSession() as session:
+                await session.post(
+                    DISCORD_NOTIFICATION_WEBHOOK,
+                    json={"embeds": [embed]}
+                )
+        except Exception as e:
+            logger.error(f"Failed to send webhook notification: {e}")
     
     async def setup_hook(self):
         """Called when bot is starting up."""
@@ -175,9 +201,36 @@ class TradingBot(commands.Bot):
                 self.stats['signals_sent'] += 1
                 logger.info(f"Signal executed successfully: {response.order_id}")
                 
+                # Send success notification
+                await self.send_webhook_notification(
+                    title="✅ Trade Executed",
+                    description=f"Successfully entered {signal.side.upper()} position",
+                    color=0x00ff00,  # Green
+                    fields=[
+                        {"name": "Symbol", "value": signal.symbol, "inline": True},
+                        {"name": "Side", "value": signal.side.upper(), "inline": True},
+                        {"name": "Entry", "value": f"${signal.entry_price:.6f}", "inline": True},
+                        {"name": "Stop Loss", "value": f"${signal.stop_loss:.6f}", "inline": True},
+                        {"name": "Take Profit", "value": f"${signal.take_profit_1:.6f}", "inline": True},
+                        {"name": "Order ID", "value": response.order_id or "N/A", "inline": False}
+                    ]
+                )
+                
             else:
                 self.stats['signals_failed'] += 1
                 logger.error(f"Signal execution failed: {response.message}")
+                
+                # Send failure notification
+                await self.send_webhook_notification(
+                    title="❌ Trade Failed",
+                    description=f"Failed to execute {signal.side.upper()} {signal.symbol}",
+                    color=0xff0000,  # Red
+                    fields=[
+                        {"name": "Symbol", "value": signal.symbol, "inline": True},
+                        {"name": "Side", "value": signal.side.upper(), "inline": True},
+                        {"name": "Error", "value": response.message[:1024], "inline": False}
+                    ]
+                )
         
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
