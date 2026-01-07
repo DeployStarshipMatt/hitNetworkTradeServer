@@ -37,6 +37,8 @@ BLOFIN_BASE_URL = os.getenv('BLOFIN_BASE_URL', 'https://demo-trading-openapi.blo
 
 # Trading Configuration
 DEFAULT_TRADE_MODE = os.getenv('DEFAULT_TRADE_MODE', 'cross')
+DEFAULT_LEVERAGE = int(os.getenv('DEFAULT_LEVERAGE', 10))
+MAX_LEVERAGE = int(os.getenv('MAX_LEVERAGE', 20))
 MAX_POSITION_SIZE_USD = float(os.getenv('MAX_POSITION_SIZE_USD', 1000))
 RISK_PER_TRADE_PERCENT = float(os.getenv('RISK_PER_TRADE_PERCENT', 1))
 
@@ -108,6 +110,71 @@ async def startup_event():
         except Exception as e:
             logger.error(f"❌ Failed to initialize BloFin client: {e}")
             blofin_client = None
+
+
+def calculate_position_size_and_leverage(
+    entry_price: float,
+    stop_loss: Optional[float],
+    available_balance: float,
+    risk_percent: float,
+    max_leverage: int
+) -> tuple[float, int]:
+    """
+    Calculate optimal position size and leverage based on stop loss distance.
+    
+    Args:
+        entry_price: Entry price for the trade
+        stop_loss: Stop loss price (None if no SL)
+        available_balance: Available account balance in USD
+        risk_percent: Percentage of balance to risk (e.g., 1 for 1%)
+        max_leverage: Maximum allowed leverage
+        
+    Returns:
+        (position_size_in_contracts, leverage)
+    """
+    # Calculate risk amount in USD
+    risk_amount = available_balance * (risk_percent / 100)
+    
+    # If no stop loss provided, use default conservative sizing
+    if not stop_loss or stop_loss <= 0:
+        logger.warning("⚠️ No stop loss provided, using conservative 2% position size")
+        position_value = available_balance * 0.02  # 2% of balance
+        position_size = position_value / entry_price
+        leverage = max(1, min(5, int(position_value / available_balance)))  # Max 5x without SL
+        return position_size, leverage
+    
+    # Calculate stop loss distance as percentage
+    sl_distance_pct = abs(entry_price - stop_loss) / entry_price
+    
+    # Prevent division by zero
+    if sl_distance_pct < 0.0001:  # Less than 0.01%
+        logger.warning("⚠️ Stop loss too close to entry, using minimum distance")
+        sl_distance_pct = 0.01  # 1% minimum
+    
+    # Calculate position size based on risk and SL distance
+    # Risk = Position Size × Entry Price × SL Distance %
+    # Therefore: Position Size = Risk / (Entry Price × SL Distance %)
+    position_size = risk_amount / (entry_price * sl_distance_pct)
+    
+    # Calculate required leverage
+    # Position Value = Position Size × Entry Price
+    # Leverage = Position Value / Available Balance
+    position_value = position_size * entry_price
+    required_leverage = position_value / available_balance
+    
+    # Cap leverage at maximum
+    if required_leverage > max_leverage:
+        logger.warning(f"⚠️ Required leverage {required_leverage:.1f}x exceeds max {max_leverage}x, adjusting position")
+        required_leverage = max_leverage
+        position_size = (available_balance * required_leverage) / entry_price
+    
+    # Round leverage to integer, minimum 1x
+    leverage = max(1, int(round(required_leverage)))
+    
+    logger.info(f"📊 Position Calc: Entry=${entry_price:.2f}, SL=${stop_loss:.2f}, Distance={sl_distance_pct*100:.2f}%, "
+                f"Risk=${risk_amount:.2f}, Size={position_size:.4f}, Leverage={leverage}x, Value=${position_value:.2f}")
+    
+    return position_size, leverage
 
 
 @app.get("/")
@@ -190,6 +257,7 @@ async def execute_trade(
         # Calculate position size based on account balance
         try:
             position_size = trade_signal.size
+            leverage = DEFAULT_LEVERAGE
             
             if not position_size:
                 # Get account balance
@@ -197,31 +265,52 @@ async def execute_trade(
                 
                 # Extract available balance (USDT)
                 available_balance = 0
-                if balance_info and 'data' in balance_info:
-                    for balance in balance_info['data']:
-                        if balance.get('ccy') == 'USDT':
-                            available_balance = float(balance.get('availBal', 0))
+                if balance_info and 'details' in balance_info:
+                    for balance in balance_info['details']:
+                        if balance.get('currency') == 'USDT':
+                            available_balance = float(balance.get('available', 0))
                             break
                 
                 if available_balance > 0:
-                    # Calculate 1% risk position size
-                    risk_amount = available_balance * (RISK_PER_TRADE_PERCENT / 100)
-                    
-                    # For futures, size is in contracts
-                    # Assuming 1 contract ≈ entry price in USDT
-                    if trade_signal.entry_price:
-                        position_size = risk_amount / trade_signal.entry_price
+                    # Get entry price (use current market price if not specified)
+                    entry_price = trade_signal.entry_price
+                    if not entry_price:
+                        # For market orders, we need to estimate - use a conservative approach
+                        # In production, you'd fetch current market price
+                        logger.warning("⚠️ No entry price for market order, using conservative sizing")
+                        position_size = 0.01
+                        leverage = DEFAULT_LEVERAGE
                     else:
-                        position_size = risk_amount / 1000  # Conservative fallback
+                        # Calculate optimal position size and leverage based on SL distance
+                        position_size, leverage = calculate_position_size_and_leverage(
+                            entry_price=entry_price,
+                            stop_loss=trade_signal.stop_loss,
+                            available_balance=available_balance,
+                            risk_percent=RISK_PER_TRADE_PERCENT,
+                            max_leverage=MAX_LEVERAGE
+                        )
                     
-                    logger.info(f"💰 Account balance: ${available_balance:.2f}, Risk: {RISK_PER_TRADE_PERCENT}%, Position size: {position_size:.4f}")
+                    logger.info(f"💰 Balance: ${available_balance:.2f}, Risk: {RISK_PER_TRADE_PERCENT}%, "
+                               f"Position: {position_size:.4f} contracts, Leverage: {leverage}x")
                 else:
                     position_size = 0.01  # Minimum fallback
+                    leverage = DEFAULT_LEVERAGE
                     logger.warning(f"⚠️ Could not get balance, using minimum size: {position_size}")
         
         except Exception as e:
             logger.warning(f"⚠️ Position sizing failed: {e}, using default 0.01")
             position_size = 0.01
+            leverage = DEFAULT_LEVERAGE
+        
+        # Set leverage for this symbol
+        try:
+            blofin_client.set_leverage(
+                symbol=trade_signal.symbol,
+                leverage=leverage,
+                margin_mode=DEFAULT_TRADE_MODE
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ Could not set leverage, continuing with default: {e}")
         
         # Execute order
         try:

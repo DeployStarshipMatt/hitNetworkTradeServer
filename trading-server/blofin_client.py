@@ -370,6 +370,35 @@ class BloFinClient:
             logger.error(f"Failed to get order status: {e}")
             raise
     
+    def set_leverage(self, symbol: str, leverage: int, margin_mode: str = "cross") -> Dict[str, Any]:
+        """
+        Set leverage for a trading pair.
+        
+        Args:
+            symbol: Trading pair (e.g., BTC-USDT)
+            leverage: Leverage value (1-125)
+            margin_mode: cross or isolated
+            
+        Returns:
+            Response from API
+        """
+        payload = {
+            "instId": symbol,
+            "lever": str(leverage),
+            "mgnMode": margin_mode
+        }
+        
+        logger.info(f"Setting leverage: {symbol} to {leverage}x ({margin_mode})")
+        
+        try:
+            response = self._request("POST", "/api/v1/account/set-leverage", payload)
+            logger.info(f"✅ Leverage set to {leverage}x")
+            return response
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to set leverage: {e}")
+            # Don't raise - leverage setting failure shouldn't stop the trade
+            return {}
+    
     def get_stats(self) -> Dict[str, Any]:
         """Get client statistics."""
         return self.stats.copy()
