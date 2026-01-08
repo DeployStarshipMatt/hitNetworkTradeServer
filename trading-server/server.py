@@ -455,9 +455,15 @@ async def execute_trade(
                 logger.info(f"💰 Position: {position_size:.4f} contracts, Leverage: {leverage}x, Risk: ${calc_result['risk_amount']:.2f}")
         
         except Exception as e:
-            logger.warning(f"⚠️ Position sizing failed: {e}, using default 0.01")
-            position_size = 0.01
-            leverage = DEFAULT_LEVERAGE
+            error_msg = f"CRITICAL: Position sizing failed: {e}"
+            logger.error(f"❌ {error_msg}")
+            return TradeResponse(
+                success=False,
+                signal_id=trade_signal.signal_id,
+                message=error_msg,
+                status="failed",
+                error_code="POSITION_SIZING_ERROR"
+            ).to_dict()
         
         # Set leverage for this symbol
         try:
