@@ -444,15 +444,15 @@ async def execute_trade(
             
             if not position_size:
                 # Use blofin_client's equity-based position sizing with 10x leverage
-                position_size = blofin_client.calculate_position_size(
+                calc_result = blofin_client.calculate_position_size(
                     symbol=trade_signal.symbol,
-                    side=trade_signal.side,
                     entry_price=trade_signal.entry_price or 0,
-                    stop_loss_price=trade_signal.stop_loss,
+                    stop_loss=trade_signal.stop_loss,
                     leverage=DEFAULT_LEVERAGE
                 )
+                position_size = calc_result['size']
                     
-                logger.info(f"💰 Position: {position_size:.4f} contracts, Leverage: {leverage}x")
+                logger.info(f"💰 Position: {position_size:.4f} contracts, Leverage: {leverage}x, Risk: ${calc_result['risk_amount']:.2f}")
         
         except Exception as e:
             logger.warning(f"⚠️ Position sizing failed: {e}, using default 0.01")
