@@ -437,48 +437,22 @@ async def execute_trade(
                 error_code="SERVICE_UNAVAILABLE"
             ).to_dict()
         
-        # Calculate position size based on account balance
+        # Calculate position size based on account equity
         try:
             position_size = trade_signal.size
             leverage = DEFAULT_LEVERAGE
             
             if not position_size:
-                # Get account balance
-                balance_info = blofin_client.get_account_balance()
-                
-                # Extract available balance (USDT)
-                available_balance = 0
-                if balance_info and 'details' in balance_info:
-                    for balance in balance_info['details']:
-                        if balance.get('currency') == 'USDT':
-                            available_balance = float(balance.get('available', 0))
-                            break
-                
-                if available_balance > 0:
-                    # Get entry price (use current market price if not specified)
-                    entry_price = trade_signal.entry_price
-                    if not entry_price:
-                        # For market orders, we need to estimate - use a conservative approach
-                        # In production, you'd fetch current market price
-                        logger.warning("⚠️ No entry price for market order, using conservative sizing")
-                        position_size = 0.01
-                        leverage = DEFAULT_LEVERAGE
-                    else:
-                        # Calculate optimal position size and leverage based on SL distance
-                        position_size, leverage = calculate_position_size_and_leverage(
-                            entry_price=entry_price,
-                            stop_loss=trade_signal.stop_loss,
-                            available_balance=available_balance,
-                            risk_percent=RISK_PER_TRADE_PERCENT,
-                            max_leverage=MAX_LEVERAGE
-                        )
+                # Use blofin_client's equity-based position sizing with 10x leverage
+                position_size = blofin_client.calculate_position_size(
+                    symbol=trade_signal.symbol,
+                    side=trade_signal.side,
+                    entry_price=trade_signal.entry_price or 0,
+                    stop_loss_price=trade_signal.stop_loss,
+                    leverage=DEFAULT_LEVERAGE
+                )
                     
-                    logger.info(f"💰 Balance: ${available_balance:.2f}, Risk: {RISK_PER_TRADE_PERCENT}%, "
-                               f"Position: {position_size:.4f} contracts, Leverage: {leverage}x")
-                else:
-                    position_size = 0.01  # Minimum fallback
-                    leverage = DEFAULT_LEVERAGE
-                    logger.warning(f"⚠️ Could not get balance, using minimum size: {position_size}")
+                logger.info(f"💰 Position: {position_size:.4f} contracts, Leverage: {leverage}x")
         
         except Exception as e:
             logger.warning(f"⚠️ Position sizing failed: {e}, using default 0.01")
@@ -495,26 +469,15 @@ async def execute_trade(
         except Exception as e:
             logger.warning(f"⚠️ Could not set leverage, continuing with default: {e}")
         
-        # Execute order
+        # Execute order - always use market orders for automated signals
         try:
-            # Determine order type
-            if trade_signal.entry_price:
-                # Limit order
-                order_result = blofin_client.place_limit_order(
-                    symbol=trade_signal.symbol,
-                    side=trade_signal.side,
-                    size=position_size,
-                    price=trade_signal.entry_price,
-                    trade_mode=DEFAULT_TRADE_MODE
-                )
-            else:
-                # Market order
-                order_result = blofin_client.place_market_order(
-                    symbol=trade_signal.symbol,
-                    side=trade_signal.side,
-                    size=position_size,
-                    trade_mode=DEFAULT_TRADE_MODE
-                )
+            # Use market order for immediate execution
+            order_result = blofin_client.place_market_order(
+                symbol=trade_signal.symbol,
+                side=trade_signal.side,
+                size=position_size,
+                trade_mode=DEFAULT_TRADE_MODE
+            )
             
             order_id = order_result.get('order_id')
             
