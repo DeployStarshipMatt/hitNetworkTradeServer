@@ -34,7 +34,7 @@ class SignalParser:
             r'SIDE[:\s*]+[_*]*(?P<side>LONG|SHORT)[📈📉_*]*.*?'
             r'ENTRY[:\s*]+`?(?P<entry>[\d.]+)`?.*?'
             r'SL[:\s*]+`?(?P<sl>[\d.]+)`?.*?'
-            r'TP1[:\s*]+`?(?P<tp>[\d.]+)`?',
+            r'TP1[:\s*]+`?(?P<tp1>[\d.]+)`?(?:.*?TP2[:\s*]+`?(?P<tp2>[\d.]+)`?)?(?:.*?TP3[:\s*]+`?(?P<tp3>[\d.]+)`?)?',
             re.IGNORECASE | re.DOTALL
         ),
         
@@ -195,7 +195,10 @@ class SignalParser:
         # Convert strings to floats
         entry_price = self._to_float(data.get('entry'))
         stop_loss = self._to_float(data.get('sl'))
-        take_profit = self._to_float(data.get('tp'))
+        # Handle multiple TP formats (tp1 or tp for backward compatibility)
+        take_profit = self._to_float(data.get('tp1') or data.get('tp'))
+        take_profit_2 = self._to_float(data.get('tp2'))
+        take_profit_3 = self._to_float(data.get('tp3'))
         size = self._to_float(data.get('size'))
         
         # Create TradeSignal
@@ -206,6 +209,8 @@ class SignalParser:
                 entry_price=entry_price,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
+                take_profit_2=take_profit_2,
+                take_profit_3=take_profit_3,
                 size=size,
                 signal_id=message_id,
                 raw_message=message[:500]  # Limit raw message length

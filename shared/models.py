@@ -51,7 +51,9 @@ class TradeSignal:
     # Optional trading parameters
     entry_price: Optional[float] = None  # Entry price (None = market order)
     stop_loss: Optional[float] = None
-    take_profit: Optional[float] = None
+    take_profit: Optional[float] = None  # TP1 (for backward compatibility)
+    take_profit_2: Optional[float] = None  # TP2
+    take_profit_3: Optional[float] = None  # TP3
     size: Optional[float] = None  # Position size (contract qty or USD amount)
     
     # Metadata
@@ -106,6 +108,12 @@ class TradeSignal:
         
         if self.take_profit is not None and self.take_profit <= 0:
             return False, "Take profit must be positive"
+        
+        if self.take_profit_2 is not None and self.take_profit_2 <= 0:
+            return False, "Take profit 2 must be positive"
+        
+        if self.take_profit_3 is not None and self.take_profit_3 <= 0:
+            return False, "Take profit 3 must be positive"
         
         if self.size is not None and self.size <= 0:
             return False, "Size must be positive"

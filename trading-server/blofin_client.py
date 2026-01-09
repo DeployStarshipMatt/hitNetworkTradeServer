@@ -447,6 +447,55 @@ class BloFinClient:
             logger.error(f"❌ Failed to set stop loss: {e}")
             raise
     
+    def set_multiple_take_profits(self, symbol: str, side: str, total_size: float,
+                                  tp_prices: list, trade_mode: str = "cross") -> list:
+        """
+        Set multiple take profit orders with position split across them.
+        Splits position equally across all provided TP levels.
+        
+        Args:
+            symbol: Trading pair
+            side: Order side (buy/sell)
+            total_size: Total position size to split
+            tp_prices: List of TP prices [tp1, tp2, tp3, ...]
+            trade_mode: Trading mode (cross/isolated)
+        
+        Returns:
+            List of order results for each TP
+        """
+        if not tp_prices:
+            return []
+        
+        # Filter out None values
+        tp_prices = [tp for tp in tp_prices if tp is not None]
+        if not tp_prices:
+            return []
+        
+        # Split position equally across all TPs
+        num_tps = len(tp_prices)
+        size_per_tp = total_size / num_tps
+        
+        # Round each split to lot size
+        size_per_tp = self.round_size_to_lot(symbol, size_per_tp)
+        
+        results = []
+        for i, tp_price in enumerate(tp_prices, 1):
+            try:
+                result = self.set_take_profit(
+                    symbol=symbol,
+                    side=side,
+                    size=size_per_tp,
+                    trigger_price=tp_price,
+                    trade_mode=trade_mode
+                )
+                logger.info(f"✅ Take profit {i}/{num_tps} set @ {tp_price} for {size_per_tp} contracts")
+                results.append(result)
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to set TP{i} @ {tp_price}: {e}")
+                results.append({'error': str(e), 'tp_level': i})
+        
+        return results
+    
     def set_take_profit(self, symbol: str, side: str, trigger_price: float, size: float,
                        trade_mode: str = "cross") -> Dict[str, Any]:
         """

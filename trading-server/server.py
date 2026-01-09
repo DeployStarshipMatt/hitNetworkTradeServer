@@ -503,21 +503,42 @@ async def execute_trade(
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to set stop loss: {e}")
             
-            # Set take profit if provided
-            if trade_signal.take_profit:
+            # Set take profits - split position if multiple TPs provided
+            tp_prices = [
+                trade_signal.take_profit,
+                trade_signal.take_profit_2,
+                trade_signal.take_profit_3
+            ]
+            # Filter out None values
+            tp_prices = [tp for tp in tp_prices if tp is not None]
+            
+            if tp_prices:
                 try:
                     # Determine opposite side for TP
                     tp_side = "sell" if trade_signal.side in ["long", "buy"] else "buy"
-                    blofin_client.set_take_profit(
-                        symbol=trade_signal.symbol,
-                        side=tp_side,
-                        size=position_size,
-                        trigger_price=trade_signal.take_profit,
-                        trade_mode=DEFAULT_TRADE_MODE
-                    )
-                    logger.info(f"✅ Take profit set @ {trade_signal.take_profit}")
+                    
+                    if len(tp_prices) == 1:
+                        # Single TP - use full position
+                        blofin_client.set_take_profit(
+                            symbol=trade_signal.symbol,
+                            side=tp_side,
+                            size=position_size,
+                            trigger_price=tp_prices[0],
+                            trade_mode=DEFAULT_TRADE_MODE
+                        )
+                        logger.info(f"✅ Take profit set @ {tp_prices[0]}")
+                    else:
+                        # Multiple TPs - split position
+                        results = blofin_client.set_multiple_take_profits(
+                            symbol=trade_signal.symbol,
+                            side=tp_side,
+                            total_size=position_size,
+                            tp_prices=tp_prices,
+                            trade_mode=DEFAULT_TRADE_MODE
+                        )
+                        logger.info(f"✅ Split position across {len(tp_prices)} take profit levels")
                 except Exception as e:
-                    logger.warning(f"⚠️ Failed to set take profit: {e}")
+                    logger.warning(f"⚠️ Failed to set take profit(s): {e}")
             
             # Send Discord notification
             position_value = position_size * (trade_signal.entry_price or 0)
