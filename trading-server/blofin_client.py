@@ -169,11 +169,20 @@ class BloFinClient:
         # Calculate raw position size
         raw_size = risk_amount / risk_per_unit
         
-        # Round to lot size
-        rounded_size = self.round_size_to_lot(symbol, raw_size)
+        # Get instrument info to get contract value
+        spec = self.get_instrument_info(symbol)
+        contract_value = spec.get('contractValue', 1.0)
         
-        # Calculate actual notional value
-        notional = rounded_size * entry_price
+        # Convert to contracts if needed (divide by contractValue)
+        # For example, 1000BONK has contractValue=1000, so 92869 BONK = 92.869 contracts
+        raw_contracts = raw_size / contract_value
+        
+        # Round to lot size (in contracts)
+        rounded_size = self.round_size_to_lot(symbol, raw_contracts)
+        
+        # Calculate actual notional value (contracts * contractValue * price)
+        actual_tokens = rounded_size * contract_value
+        notional = actual_tokens * entry_price
         
         # Use specified leverage (default 10x for more available margin)
         margin_needed = notional / leverage
@@ -181,6 +190,9 @@ class BloFinClient:
         return {
             'size': rounded_size,
             'raw_size': raw_size,
+            'raw_contracts': raw_contracts,
+            'contract_value': contract_value,
+            'actual_tokens': actual_tokens,
             'notional_value': notional,
             'margin_needed': margin_needed,
             'leverage': leverage,
@@ -215,21 +227,22 @@ class BloFinClient:
                         'minSize': float(inst.get('minSize', 1)),
                         'lotSize': float(inst.get('lotSize', 1)),
                         'tickSize': float(inst.get('tickSize', 0.01)),
+                        'contractValue': float(inst.get('contractValue', 1)),
                         'contractType': inst.get('contractType'),
                         'instId': symbol
                     }
                     # Cache it
                     self._instrument_cache[symbol] = spec
-                    logger.info(f"Instrument {symbol}: minSize={spec['minSize']}, lotSize={spec['lotSize']}")
+                    logger.info(f"Instrument {symbol}: minSize={spec['minSize']}, lotSize={spec['lotSize']}, contractValue={spec['contractValue']}")
                     return spec
             
             # Not found, return defaults
             logger.warning(f"Instrument {symbol} not found, using defaults")
-            return {'minSize': 1.0, 'lotSize': 1.0, 'tickSize': 0.01, 'instId': symbol}
+            return {'minSize': 1.0, 'lotSize': 1.0, 'tickSize': 0.01, 'contractValue': 1.0, 'instId': symbol}
             
         except Exception as e:
             logger.warning(f"Failed to get instrument info for {symbol}: {e}, using defaults")
-            return {'minSize': 1.0, 'lotSize': 1.0, 'tickSize': 0.01, 'instId': symbol}
+            return {'minSize': 1.0, 'lotSize': 1.0, 'tickSize': 0.01, 'contractValue': 1.0, 'instId': symbol}
     
     def round_size_to_lot(self, symbol: str, size: float) -> float:
         """
