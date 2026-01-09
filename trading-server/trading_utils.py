@@ -220,9 +220,11 @@ def set_position_protection(client: BloFinClient, symbol: str, stop_loss: float,
     
     # Set take profits
     if tp2 and tp3:
-        # 3-tier TP
-        tp_size = abs_size // 3
+        # 3-tier TP - split position equally
+        tp_size = abs_size / 3
+        tp_size = client.round_size_to_lot(symbol, tp_size)
         remaining = abs_size - (tp_size * 2)
+        remaining = client.round_size_to_lot(symbol, remaining)
         
         try:
             tp1_result = client.set_take_profit(symbol, close_side, take_profit, tp_size)
