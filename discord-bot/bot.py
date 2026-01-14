@@ -245,7 +245,10 @@ class TradingBot(commands.Bot):
         if message.author == self.user:
             return
         
-        # Ignore messages from other channels
+        # Process commands from any channel first
+        await self.process_commands(message)
+        
+        # Only parse trade signals from the monitored channel
         if message.channel.id != DISCORD_CHANNEL_ID:
             return
         
@@ -343,6 +346,10 @@ class TradingBot(commands.Bot):
     @commands.command(name='update')
     async def update_command(self, ctx):
         """Get current account status and active trades."""
+        # Don't respond in the trade signals channel
+        if ctx.channel.id == DISCORD_CHANNEL_ID:
+            return
+        
         try:
             # Get account data from trading server
             response = requests.get(
@@ -401,6 +408,10 @@ class TradingBot(commands.Bot):
     @commands.command(name='stats')
     async def stats_command(self, ctx):
         """Show bot statistics."""
+        # Don't respond in the trade signals channel
+        if ctx.channel.id == DISCORD_CHANNEL_ID:
+            return
+        
         parser_stats = self.parser.get_stats()
         client_stats = self.trading_client.get_stats()
         
@@ -426,6 +437,10 @@ class TradingBot(commands.Bot):
     @commands.command(name='health')
     async def health_command(self, ctx):
         """Check Trading Server health."""
+        # Don't respond in the trade signals channel
+        if ctx.channel.id == DISCORD_CHANNEL_ID:
+            return
+        
         health = self.trading_client.health_check()
         
         status_emoji = {
@@ -451,6 +466,10 @@ class TradingBot(commands.Bot):
     @commands.command(name='test')
     async def test_command(self, ctx, *, message: str):
         """Test parser with a message."""
+        # Don't respond in the trade signals channel
+        if ctx.channel.id == DISCORD_CHANNEL_ID:
+            return
+        
         signal = self.parser.parse(message)
         
         if signal:
