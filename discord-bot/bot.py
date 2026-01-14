@@ -346,150 +346,92 @@ class TradingBot(commands.Bot):
                 return False
         
         return True
+
+
+# Define commands as standalone functions (not class methods)
+# This allows discord.py to properly register them
+
+@commands.command(name='update')
+async def cmd_update(ctx):
+    """Get current account status and active trades."""
+    logger.info(f"!update command called from channel {ctx.channel.id}, monitored channel is {DISCORD_CHANNEL_ID}")
     
-    @commands.command(name='update')
-    async def update_command(self, ctx):
-        """Get current account status and active trades."""
-        logger.info(f"!update command called from channel {ctx.channel.id}, monitored channel is {DISCORD_CHANNEL_ID}")
-        
-        # Don't respond in the trade signals channel
-        if ctx.channel.id == DISCORD_CHANNEL_ID:
-            logger.info("Ignoring !update in trade signals channel")
-            return
-        
-        try:
-            # Get account data from trading server
-            response = requests.get(
-                f"{TRADING_SERVER_URL}/api/v1/account/status",
-                headers={"X-API-Key": TRADING_SERVER_API_KEY},
-                timeout=10
-            )
-            
-            if response.status_code != 200:
-                await ctx.send(f"❌ Failed to get account status: {response.status_code}")
-                return
-            
-            data = response.json()
-            
-            # Format header
-            available = data.get('available_balance', 0)
-            equity = data.get('total_equity', 0)
-            
-            msg = f"📊 **Account Status**\n\n"
-            msg += f"💰 **Balance:** ${available:.2f}\n"
-            msg += f"💼 **Equity:** ${equity:.2f}\n\n"
-            
-            # Format positions
-            positions = data.get('positions', [])
-            if positions and len(positions) > 0:
-                msg += f"📈 **Active Trades ({len(positions)}):**\n\n"
-                
-                for pos in positions:
-                    if float(pos.get('size', 0)) != 0:
-                        symbol = pos['symbol']
-                        size = float(pos['size'])
-                        side = "🟢 LONG" if size > 0 else "🔴 SHORT"
-                        size_abs = abs(size)
-                        entry = float(pos['entry_price'])
-                        current = float(pos['current_price'])
-                        pnl = float(pos['pnl'])
-                        pnl_pct = float(pos['pnl_percent'])
-                        
-                        pnl_emoji = "📈" if pnl >= 0 else "📉"
-                        
-                        msg += f"{side} **{symbol}**\n"
-                        msg += f"  Size: {size_abs:.4f} contracts\n"
-                        msg += f"  Entry: ${entry:.4f} | Current: ${current:.4f}\n"
-                        msg += f"  {pnl_emoji} P&L: ${pnl:.2f} ({pnl_pct:+.2f}%)\n\n"
-            else:
-                msg += "✅ **No Active Trades**\n\n"
-            
-            msg += f"_Last updated: {data.get('timestamp', 'N/A')}_"
-            
-            await ctx.send(msg)
-            
-        except Exception as e:
-            logger.error(f"Error in update command: {e}")
-            await ctx.send(f"❌ Error getting account status: {str(e)}")
+    # Don't respond in the trade signals channel
+    if ctx.channel.id == DISCORD_CHANNEL_ID:
+        logger.info("Ignoring !update in trade signals channel")
+        return
     
-    @commands.command(name='stats')
-    async def stats_command(self, ctx):
-        """Show bot statistics."""
-        # Don't respond in the trade signals channel
-        if ctx.channel.id == DISCORD_CHANNEL_ID:
-            return
-        
-        parser_stats = self.parser.get_stats()
-        client_stats = self.trading_client.get_stats()
-        
-        stats_msg = (
-            f"📊 **Bot Statistics**\n\n"
-            f"**Messages:**\n"
-            f"• Seen: {self.stats['messages_seen']}\n"
-            f"• Signals Detected: {self.stats['signals_detected']}\n"
-            f"• Signals Sent: {self.stats['signals_sent']}\n"
-            f"• Failed: {self.stats['signals_failed']}\n\n"
-            f"**Parser:**\n"
-            f"• Total Parsed: {parser_stats['total_parsed']}\n"
-            f"• Success Rate: {parser_stats['successful']}/{parser_stats['total_parsed']}\n\n"
-            f"**Trading Server:**\n"
-            f"• Requests: {client_stats['requests_sent']}\n"
-            f"• Success: {client_stats['requests_succeeded']}\n"
-            f"• Failed: {client_stats['requests_failed']}\n"
-            f"• Retries: {client_stats['retries']}"
+    try:
+        # Get account data from trading server
+        response = requests.get(
+            f"{TRADING_SERVER_URL}/api/v1/account/status",
+            headers={"X-API-Key": TRADING_SERVER_API_KEY},
+            timeout=10
         )
         
-        await ctx.send(stats_msg)
-    
-    @commands.command(name='health')
-    async def health_command(self, ctx):
-        """Check Trading Server health."""
-        # Don't respond in the trade signals channel
-        if ctx.channel.id == DISCORD_CHANNEL_ID:
+        if response.status_code != 200:
+            await ctx.send(f"❌ Failed to get account status: {response.status_code}")
             return
         
-        health = self.trading_client.health_check()
+        data = response.json()
         
-        status_emoji = {
-            'healthy': '✅',
-            'degraded': '⚠️',
-            'unhealthy': '❌',
-            'unreachable': '🔴'
-        }
+        # Format header
+        available = data.get('available_balance', 0)
+        equity = data.get('total_equity', 0)
         
-        emoji = status_emoji.get(health.get('status'), '❓')
+        msg = f"📊 **Account Status**\n\n"
+        msg += f"💰 **Balance:** ${available:.2f}\n"
+        msg += f"💼 **Equity:** ${equity:.2f}\n\n"
         
-        health_msg = (
-            f"{emoji} **Trading Server Health**\n"
-            f"Status: `{health.get('status', 'unknown')}`\n"
-            f"URL: `{TRADING_SERVER_URL}`"
-        )
-        
-        if 'error' in health:
-            health_msg += f"\nError: `{health['error']}`"
-        
-        await ctx.send(health_msg)
-    
-    @commands.command(name='test')
-    async def test_command(self, ctx, *, message: str):
-        """Test parser with a message."""
-        # Don't respond in the trade signals channel
-        if ctx.channel.id == DISCORD_CHANNEL_ID:
-            return
-        
-        signal = self.parser.parse(message)
-        
-        if signal:
-            await ctx.send(
-                f"✅ **Parsed Successfully**\n"
-                f"Symbol: `{signal.symbol}`\n"
-                f"Side: `{signal.side}`\n"
-                f"Entry: `{signal.entry_price or 'Market'}`\n"
-                f"SL: `{signal.stop_loss or 'N/A'}`\n"
-                f"TP: `{signal.take_profit or 'N/A'}`"
-            )
+        # Format positions
+        positions = data.get('positions', [])
+        if positions and len(positions) > 0:
+            msg += f"📈 **Active Trades ({len(positions)}):**\n\n"
+            
+            for pos in positions:
+                if float(pos.get('size', 0)) != 0:
+                    symbol = pos['symbol']
+                    size = float(pos['size'])
+                    side = "🟢 LONG" if size > 0 else "🔴 SHORT"
+                    size_abs = abs(size)
+                    entry = float(pos['entry_price'])
+                    current = float(pos['current_price'])
+                    pnl = float(pos['pnl'])
+                    pnl_pct = float(pos['pnl_percent'])
+                    
+                    pnl_emoji = "📈" if pnl >= 0 else "📉"
+                    
+                    msg += f"{side} **{symbol}**\n"
+                    msg += f"  Size: {size_abs:.4f} contracts\n"
+                    msg += f"  Entry: ${entry:.4f} | Current: ${current:.4f}\n"
+                    msg += f"  {pnl_emoji} P&L: ${pnl:.2f} ({pnl_pct:+.2f}%)\n\n"
         else:
-            await ctx.send("❌ Could not parse message as a trade signal")
+            msg += "✅ **No Active Trades**\n\n"
+        
+        msg += f"_Last updated: {data.get('timestamp', 'N/A')}_"
+        
+        await ctx.send(msg)
+        
+    except Exception as e:
+        logger.error(f"Error in update command: {e}")
+        await ctx.send(f"❌ Error getting account status: {str(e)}")
+
+
+@commands.command(name='health')
+async def cmd_health(ctx):
+    """Check Trading Server health."""
+    # Don't respond in the trade signals channel
+    if ctx.channel.id == DISCORD_CHANNEL_ID:
+        return
+    
+    try:
+        response = requests.get(f"{TRADING_SERVER_URL}/health", timeout=5)
+        if response.status_code == 200:
+            await ctx.send("✅ Trading Server is healthy")
+        else:
+            await ctx.send(f"⚠️ Trading Server returned status code: {response.status_code}")
+    except Exception as e:
+        await ctx.send(f"❌ Cannot reach Trading Server: {str(e)}")
 
 
 def main():
@@ -510,12 +452,9 @@ def main():
     # Create bot instance
     bot = TradingBot()
     
-    # Explicitly add all commands to the bot
-    # (Required because they're defined as class methods with @commands.command decorator)
-    bot.add_command(bot.update_command)
-    bot.add_command(bot.stats_command)
-    bot.add_command(bot.health_command)
-    bot.add_command(bot.test_command)
+    # Add standalone commands to the bot
+    bot.add_command(cmd_update)
+    bot.add_command(cmd_health)
     
     try:
         logger.info("🚀 Starting Discord Bot...")
