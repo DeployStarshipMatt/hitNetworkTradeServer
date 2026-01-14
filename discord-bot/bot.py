@@ -178,13 +178,6 @@ class TradingBot(commands.Bot):
     async def setup_hook(self):
         """Called when bot is starting up."""
         logger.info("Bot is starting up...")
-        
-        # Register commands
-        self.add_command(self.update_command)
-        self.add_command(self.stats_command)
-        self.add_command(self.health_command)
-        self.add_command(self.test_command)
-        
         # Start periodic status updates
         self.status_update_task.start()
     
@@ -514,8 +507,15 @@ def main():
         logger.error("❌ TRADING_SERVER_API_KEY not set in .env file")
         return
     
-    # Create and run bot
+    # Create bot instance
     bot = TradingBot()
+    
+    # Explicitly add all commands to the bot
+    # (Required because they're defined as class methods with @commands.command decorator)
+    bot.add_command(bot.update_command)
+    bot.add_command(bot.stats_command)
+    bot.add_command(bot.health_command)
+    bot.add_command(bot.test_command)
     
     try:
         logger.info("🚀 Starting Discord Bot...")
