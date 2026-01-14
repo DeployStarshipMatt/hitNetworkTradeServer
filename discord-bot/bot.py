@@ -245,6 +245,10 @@ class TradingBot(commands.Bot):
         if message.author == self.user:
             return
         
+        # Log command attempts for debugging
+        if message.content.startswith('!'):
+            logger.info(f"Command received: '{message.content}' from {message.author} in channel {message.channel.id} (guild: {message.guild.id if message.guild else 'DM'})")
+        
         # Process commands from any channel first
         await self.process_commands(message)
         
@@ -346,8 +350,11 @@ class TradingBot(commands.Bot):
     @commands.command(name='update')
     async def update_command(self, ctx):
         """Get current account status and active trades."""
+        logger.info(f"!update command called from channel {ctx.channel.id}, monitored channel is {DISCORD_CHANNEL_ID}")
+        
         # Don't respond in the trade signals channel
         if ctx.channel.id == DISCORD_CHANNEL_ID:
+            logger.info("Ignoring !update in trade signals channel")
             return
         
         try:
