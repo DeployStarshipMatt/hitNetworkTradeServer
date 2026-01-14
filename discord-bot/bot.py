@@ -178,6 +178,13 @@ class TradingBot(commands.Bot):
     async def setup_hook(self):
         """Called when bot is starting up."""
         logger.info("Bot is starting up...")
+        
+        # Register commands
+        self.add_command(self.update_command)
+        self.add_command(self.stats_command)
+        self.add_command(self.health_command)
+        self.add_command(self.test_command)
+        
         # Start periodic status updates
         self.status_update_task.start()
     
