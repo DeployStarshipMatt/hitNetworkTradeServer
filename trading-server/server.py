@@ -7,6 +7,7 @@ Self-contained service with REST API.
 from fastapi import FastAPI, HTTPException, Security, Depends
 from fastapi.security import APIKeyHeader
 from fastapi.responses import JSONResponse
+import requests
 import logging
 import os
 from dotenv import load_dotenv
@@ -23,6 +24,8 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from blofin_client import BloFinClient
 from shared.models import TradeSignal, TradeResponse, HealthCheck
+import trading_utils
+from order_monitor import OrderMonitor
 
 # Load environment variables
 load_dotenv()
@@ -51,6 +54,12 @@ DISCORD_NOTIFICATION_WEBHOOK = os.getenv('DISCORD_NOTIFICATION_WEBHOOK')
 # Supported Pairs
 PAIRS_FILE = os.path.join(os.path.dirname(__file__), 'blofin_pairs.json')
 PAIRS_UPDATE_INTERVAL = 86400  # 24 hours in seconds
+
+# Cleanup Configuration
+CLEANUP_INTERVAL = 1800  # Clean up orphaned orders every 30 minutes
+
+# Order Monitoring
+ORDER_MONITOR_INTERVAL = 30  # Check TP/SL orders every 30 seconds
 
 # Logging
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
@@ -90,6 +99,9 @@ def verify_api_key(api_key: str = Security(api_key_header)):
 
 # Initialize BloFin client
 blofin_client: Optional[BloFinClient] = None
+
+# Initialize Order Monitor
+order_monitor: Optional[OrderMonitor] = None
 
 # Supported pairs cache
 supported_pairs = set()
@@ -137,10 +149,33 @@ def pairs_update_worker():
         time.sleep(PAIRS_UPDATE_INTERVAL)
         update_supported_pairs()
 
+def orphaned_orders_cleanup_worker():
+    """Background worker to clean up orphaned TP orders every 30 minutes"""
+    while True:
+        time.sleep(CLEANUP_INTERVAL)
+        if blofin_client:
+            try:
+                logger.info("🧹 Running periodic cleanup of orphaned orders...")
+                results = trading_utils.cleanup_all_orphaned_orders(blofin_client)
+                if results:
+                    logger.info(f"✅ Cleaned {sum(results.values())} orders from {len(results)} symbols")
+            except Exception as e:
+                logger.error(f"Error in cleanup worker: {e}")
+
+def order_monitor_worker():
+    """Background worker to check TP/SL orders every 30 seconds"""
+    while True:
+        time.sleep(ORDER_MONITOR_INTERVAL)
+        if order_monitor:
+            try:
+                order_monitor.check_orders()
+            except Exception as e:
+                logger.error(f"Error in order monitor worker: {e}")
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup."""
-    global blofin_client
+    global blofin_client, order_monitor
     
     logger.info("🚀 Starting Trading Server...")
     logger.info(f"📡 BloFin API: {BLOFIN_BASE_URL}")
@@ -159,9 +194,13 @@ async def startup_event():
             )
             logger.info("✅ BloFin client initialized")
             
-            # Test connection (optional - comment out if causing issues)
-            # balance = blofin_client.get_account_balance()
-            # logger.info(f"✅ BloFin connection verified")
+            # Initialize Order Monitor
+            order_monitor = OrderMonitor(
+                blofin_client=blofin_client,
+                webhook_url=DISCORD_NOTIFICATION_WEBHOOK,
+                check_interval=ORDER_MONITOR_INTERVAL
+            )
+            logger.info("✅ Order Monitor initialized")
             
         except Exception as e:
             logger.error(f"❌ Failed to initialize BloFin client: {e}")
@@ -174,6 +213,17 @@ async def startup_event():
     update_thread = threading.Thread(target=pairs_update_worker, daemon=True)
     update_thread.start()
     logger.info("🔄 Started daily pairs update worker")
+    
+    # Start background worker for orphaned order cleanup
+    cleanup_thread = threading.Thread(target=orphaned_orders_cleanup_worker, daemon=True)
+    cleanup_thread.start()
+    logger.info("🧹 Started orphaned order cleanup worker (every 30 min)")
+    
+    # Start background worker for order monitoring
+    if order_monitor:
+        monitor_thread = threading.Thread(target=order_monitor_worker, daemon=True)
+        monitor_thread.start()
+        logger.info(f"📡 Started order monitor worker (every {ORDER_MONITOR_INTERVAL}s)")
 
 
 def calculate_position_size_and_leverage(
@@ -251,7 +301,11 @@ def send_discord_notification(
     leverage: int,
     order_id: str,
     position_value: float,
-    error_message: Optional[str] = None
+    error_message: Optional[str] = None,
+    take_profit_2: Optional[float] = None,
+    take_profit_3: Optional[float] = None,
+    risk_percent: Optional[float] = None,
+    risk_amount: Optional[float] = None
 ):
     """
     Send trade notification to Discord via webhook.
@@ -261,12 +315,16 @@ def send_discord_notification(
         side: long/short
         entry_price: Entry price
         stop_loss: Stop loss price
-        take_profit: Take profit price
+        take_profit: Take profit price (TP1)
         position_size: Position size in contracts
         leverage: Leverage used
         order_id: Order ID from exchange
         position_value: Total position value in USD
         error_message: Error message if trade failed
+        take_profit_2: Second take profit level (TP2)
+        take_profit_3: Third take profit level (TP3)
+        risk_percent: Risk percentage used
+        risk_amount: Dollar amount at risk
     """
     if not DISCORD_NOTIFICATION_WEBHOOK:
         return  # No webhook configured, skip
@@ -289,6 +347,26 @@ def send_discord_notification(
             # Determine emoji based on side
             side_emoji = "📈" if side.lower() in ["long", "buy"] else "📉"
             
+            # Calculate TP profits and position splits
+            tp_list = [take_profit, take_profit_2, take_profit_3]
+            tp_list = [tp for tp in tp_list if tp is not None]
+            num_tps = len(tp_list)
+            
+            # Calculate profit dollars for each TP based on position split
+            tp_profits = []
+            if entry_price and num_tps > 0:
+                # Position is split equally across all TPs
+                size_per_tp = position_size / num_tps
+                
+                for tp_price in tp_list:
+                    if side.lower() in ["long", "buy"]:
+                        profit_per_contract = tp_price - entry_price
+                    else:
+                        profit_per_contract = entry_price - tp_price
+                    
+                    profit_dollars = profit_per_contract * size_per_tp
+                    tp_profits.append(profit_dollars)
+            
             # Build notification message
             embed = {
                 "title": f"{side_emoji} Trade Executed: {symbol}",
@@ -306,10 +384,30 @@ def send_discord_notification(
         # Add price fields if available
         if entry_price:
             embed["fields"].insert(1, {"name": "Entry Price", "value": f"${entry_price:.2f}", "inline": True})
+        
+        # Add risk information
+        if risk_percent and risk_amount:
+            embed["fields"].append({"name": "⚠️ Risk", "value": f"{risk_percent}% (${risk_amount:.2f})", "inline": True})
+        
         if stop_loss:
             embed["fields"].append({"name": "🛑 Stop Loss", "value": f"${stop_loss:.2f}", "inline": True})
+        
+        # Add all take profit levels with profit dollars
         if take_profit:
-            embed["fields"].append({"name": "🎯 Take Profit", "value": f"${take_profit:.2f}", "inline": True})
+            tp_value = f"${take_profit:.2f}"
+            if len(tp_profits) > 0:
+                tp_value += f" (+${tp_profits[0]:.2f})"
+            embed["fields"].append({"name": "🎯 TP1", "value": tp_value, "inline": True})
+        if take_profit_2:
+            tp_value = f"${take_profit_2:.2f}"
+            if len(tp_profits) > 1:
+                tp_value += f" (+${tp_profits[1]:.2f})"
+            embed["fields"].append({"name": "🎯 TP2", "value": tp_value, "inline": True})
+        if take_profit_3:
+            tp_value = f"${take_profit_3:.2f}"
+            if len(tp_profits) > 2:
+                tp_value += f" (+${tp_profits[2]:.2f})"
+            embed["fields"].append({"name": "🎯 TP3", "value": tp_value, "inline": True})
         
         # Send webhook
         payload = {
@@ -440,15 +538,17 @@ async def execute_trade(
         # Calculate position size based on account equity
         try:
             position_size = trade_signal.size
-            leverage = DEFAULT_LEVERAGE
+            # Use leverage from signal if provided, otherwise use DEFAULT_LEVERAGE
+            leverage = trade_signal.leverage if trade_signal.leverage else DEFAULT_LEVERAGE
+            logger.info(f"📊 Using leverage: {leverage}x {'(from signal)' if trade_signal.leverage else '(default)'}")
             
             if not position_size:
-                # Use blofin_client's equity-based position sizing with 10x leverage
+                # Use blofin_client's equity-based position sizing with specified leverage
                 calc_result = blofin_client.calculate_position_size(
                     symbol=trade_signal.symbol,
                     entry_price=trade_signal.entry_price or 0,
                     stop_loss=trade_signal.stop_loss,
-                    leverage=DEFAULT_LEVERAGE
+                    leverage=leverage
                 )
                 position_size = calc_result['size']
                     
@@ -488,18 +588,32 @@ async def execute_trade(
             order_id = order_result.get('order_id')
             
             # Set stop loss if provided
+            sl_order_id = None
             if trade_signal.stop_loss:
                 try:
                     # Determine opposite side for SL
                     sl_side = "sell" if trade_signal.side in ["long", "buy"] else "buy"
-                    blofin_client.set_stop_loss(
+                    sl_result = blofin_client.set_stop_loss(
                         symbol=trade_signal.symbol,
                         side=sl_side,
                         size=position_size,
                         trigger_price=trade_signal.stop_loss,
                         trade_mode=DEFAULT_TRADE_MODE
                     )
+                    sl_order_id = sl_result.get('order_id')
                     logger.info(f"✅ Stop loss set @ {trade_signal.stop_loss}")
+                    
+                    # Register SL with order monitor
+                    if order_monitor and sl_order_id:
+                        order_monitor.track_order(
+                            symbol=trade_signal.symbol,
+                            order_id=sl_order_id,
+                            order_type='SL',
+                            trigger_price=trade_signal.stop_loss,
+                            size=position_size,
+                            side=sl_side,
+                            entry_price=trade_signal.entry_price
+                        )
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to set stop loss: {e}")
             
@@ -519,7 +633,7 @@ async def execute_trade(
                     
                     if len(tp_prices) == 1:
                         # Single TP - use full position
-                        blofin_client.set_take_profit(
+                        tp_result = blofin_client.set_take_profit(
                             symbol=trade_signal.symbol,
                             side=tp_side,
                             size=position_size,
@@ -527,6 +641,18 @@ async def execute_trade(
                             trade_mode=DEFAULT_TRADE_MODE
                         )
                         logger.info(f"✅ Take profit set @ {tp_prices[0]}")
+                        
+                        # Register with monitor
+                        if order_monitor and tp_result.get('order_id'):
+                            order_monitor.track_order(
+                                symbol=trade_signal.symbol,
+                                order_id=tp_result['order_id'],
+                                order_type='TP1',
+                                trigger_price=tp_prices[0],
+                                size=position_size,
+                                side=tp_side,
+                                entry_price=trade_signal.entry_price
+                            )
                     else:
                         # Multiple TPs - split position
                         results = blofin_client.set_multiple_take_profits(
@@ -537,11 +663,34 @@ async def execute_trade(
                             trade_mode=DEFAULT_TRADE_MODE
                         )
                         logger.info(f"✅ Split position across {len(tp_prices)} take profit levels")
+                        
+                        # Register each TP with monitor
+                        if order_monitor:
+                            num_tps = len(tp_prices)
+                            size_per_tp = position_size / num_tps
+                            for i, (tp_price, tp_result) in enumerate(zip(tp_prices, results), 1):
+                                if tp_result and tp_result.get('order_id'):
+                                    # Calculate actual size for this TP (last one gets remainder)
+                                    tp_size = tp_result.get('size', size_per_tp)
+                                    order_monitor.track_order(
+                                        symbol=trade_signal.symbol,
+                                        order_id=tp_result['order_id'],
+                                        order_type=f'TP{i}',
+                                        trigger_price=tp_price,
+                                        size=tp_size,
+                                        side=tp_side,
+                                        entry_price=trade_signal.entry_price
+                                    )
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to set take profit(s): {e}")
             
-            # Send Discord notification
+            # Send Discord notification immediately with all trade details
             position_value = position_size * (trade_signal.entry_price or 0)
+            
+            # Get risk info if available from calc_result
+            risk_pct = calc_result.get('risk_percent', RISK_PER_TRADE_PERCENT) if 'calc_result' in locals() else RISK_PER_TRADE_PERCENT
+            risk_amt = calc_result.get('risk_amount', 0) if 'calc_result' in locals() else 0
+            
             send_discord_notification(
                 symbol=trade_signal.symbol,
                 side=trade_signal.side,
@@ -551,7 +700,11 @@ async def execute_trade(
                 position_size=position_size,
                 leverage=leverage,
                 order_id=order_id,
-                position_value=position_value
+                position_value=position_value,
+                take_profit_2=trade_signal.take_profit_2,
+                take_profit_3=trade_signal.take_profit_3,
+                risk_percent=risk_pct,
+                risk_amount=risk_amt
             )
             
             # Success response

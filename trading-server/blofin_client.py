@@ -377,7 +377,7 @@ class BloFinClient:
         logger.info(f"Placing limit order: {api_side} {rounded_size} {symbol} @ {price} (requested: {size})")
         
         try:
-            response = self._request("POST", "/api/v1/trade/order", payload)
+            response = self._request("POST", "/api/v1/copytrading/trade/place-order", payload)
             self.stats['orders_placed'] += 1
             
             # Response is a list of orders, get the first one
@@ -426,19 +426,15 @@ class BloFinClient:
             "instId": symbol,
             "marginMode": trade_mode,
             "positionSide": "net",
-            "side": side,
-            "orderType": "trigger",
-            "size": str(rounded_size),
-            "orderPrice": "-1",
-            "triggerPrice": str(trigger_price),
-            "triggerPriceType": "mark",
-            "reduceOnly": "true"
+            "slTriggerPrice": str(trigger_price),
+            "tpTriggerPrice": "",
+            "size": str(rounded_size)
         }
         
         logger.info(f"Setting stop loss: {symbol} @ {trigger_price} (size: {rounded_size}, requested: {size})")
         
         try:
-            response = self._request("POST", "/api/v1/trade/order-algo", payload)
+            response = self._request("POST", "/api/v1/copytrading/trade/place-tpsl-by-contract", payload)
             algo_id = response.get('algoId')
             logger.info(f"✅ Stop loss set: {algo_id}")
             return {'order_id': algo_id, 'type': 'stop_loss'}
@@ -476,23 +472,38 @@ class BloFinClient:
         size_per_tp = total_size / num_tps
         
         # Round each split to lot size
-        size_per_tp = self.round_size_to_lot(symbol, size_per_tp)
+        size_per_tp_rounded = self.round_size_to_lot(symbol, size_per_tp)
+        
+        # Calculate how much has been allocated to first N-1 TPs
+        allocated = size_per_tp_rounded * (num_tps - 1)
+        
+        # Last TP gets the remainder to ensure full position closure
+        last_tp_size = total_size - allocated
+        last_tp_size = self.round_size_to_lot(symbol, last_tp_size)
+        
+        logger.info(f"Splitting {total_size} across {num_tps} TPs: {size_per_tp_rounded} each, last TP: {last_tp_size}")
         
         results = []
         for i, tp_price in enumerate(tp_prices, 1):
+            # Use remainder for last TP to ensure complete closure
+            tp_size = last_tp_size if i == num_tps else size_per_tp_rounded
+            
             try:
                 result = self.set_take_profit(
                     symbol=symbol,
                     side=side,
-                    size=size_per_tp,
+                    size=tp_size,
                     trigger_price=tp_price,
                     trade_mode=trade_mode
                 )
-                logger.info(f"✅ Take profit {i}/{num_tps} set @ {tp_price} for {size_per_tp} contracts")
+                # Add size to result for tracking
+                result['size'] = tp_size
+                result['tp_level'] = i
+                logger.info(f"✅ Take profit {i}/{num_tps} set @ {tp_price} for {tp_size} contracts")
                 results.append(result)
             except Exception as e:
                 logger.warning(f"⚠️ Failed to set TP{i} @ {tp_price}: {e}")
-                results.append({'error': str(e), 'tp_level': i})
+                results.append({'error': str(e), 'tp_level': i, 'size': tp_size})
         
         return results
     
@@ -518,19 +529,15 @@ class BloFinClient:
             "instId": symbol,
             "marginMode": trade_mode,
             "positionSide": "net",
-            "side": side,
-            "orderType": "trigger",
-            "size": str(rounded_size),
-            "orderPrice": "-1",
-            "triggerPrice": str(trigger_price),
-            "triggerPriceType": "mark",
-            "reduceOnly": "true"
+            "tpTriggerPrice": str(trigger_price),
+            "slTriggerPrice": "",
+            "size": str(rounded_size)
         }
         
         logger.info(f"Setting take profit: {symbol} @ {trigger_price} (size: {rounded_size}, requested: {size})")
         
         try:
-            response = self._request("POST", "/api/v1/trade/order-algo", payload)
+            response = self._request("POST", "/api/v1/copytrading/trade/place-tpsl-by-contract", payload)
             algo_id = response.get('algoId')
             logger.info(f"✅ Take profit set: {algo_id}")
             return {'order_id': algo_id, 'type': 'take_profit'}
@@ -547,7 +554,7 @@ class BloFinClient:
             Account balance information
         """
         try:
-            response = self._request("GET", "/api/v1/account/balance")
+            response = self._request("GET", "/api/v1/copytrading/account/balance")
             return response
         except Exception as e:
             logger.error(f"Failed to get account balance: {e}")
@@ -561,7 +568,7 @@ class BloFinClient:
             List of open positions
         """
         try:
-            response = self._request("GET", "/api/v1/account/positions")
+            response = self._request("GET", "/api/v1/copytrading/account/positions-by-contract")
             return response if isinstance(response, list) else []
         except Exception as e:
             logger.error(f"Failed to get positions: {e}")
@@ -606,7 +613,7 @@ class BloFinClient:
         logger.info(f"Setting leverage: {symbol} to {leverage}x ({margin_mode})")
         
         try:
-            response = self._request("POST", "/api/v1/account/set-leverage", payload)
+            response = self._request("POST", "/api/v1/copytrading/account/set-leverage", payload)
             logger.info(f"✅ Leverage set to {leverage}x")
             return response
         except Exception as e:

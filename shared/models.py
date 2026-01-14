@@ -55,6 +55,7 @@ class TradeSignal:
     take_profit_2: Optional[float] = None  # TP2
     take_profit_3: Optional[float] = None  # TP3
     size: Optional[float] = None  # Position size (contract qty or USD amount)
+    leverage: Optional[int] = None  # Leverage from signal (e.g., 35x -> 35)
     
     # Metadata
     source: str = "discord"  # Source identifier

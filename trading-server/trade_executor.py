@@ -35,7 +35,7 @@ class TradeExecutor:
     def execute_trade(self, symbol: str, side: str, entry_price: float, 
                      stop_loss: float, take_profit: float, 
                      risk_percent: float = 1.0,
-                     leverage: int = 10,
+                     leverage: Optional[int] = None,
                      use_3tier_tp: bool = False) -> Dict[str, Any]:
         """
         Execute a complete trade with SL/TP.
@@ -47,7 +47,7 @@ class TradeExecutor:
             stop_loss: Stop loss price
             take_profit: Take profit price (or TP1 if using 3-tier)
             risk_percent: Percent of EQUITY to risk (default 1.0)
-            leverage: Leverage to use (default 10x)
+            leverage: Leverage to use (None = use 10x default)
             use_3tier_tp: If True, assumes take_profit is TP1 and creates 3 levels
             
         Returns:
@@ -60,6 +60,10 @@ class TradeExecutor:
         try:
             # 1. Validate inputs
             self._validate_trade_params(symbol, side, entry_price, stop_loss, take_profit)
+            
+            # Use default leverage if not provided
+            if leverage is None:
+                leverage = 10
             
             # 2. Set leverage for the symbol
             logger.info(f"Setting leverage to {leverage}x for {symbol}...")
@@ -195,9 +199,19 @@ class TradeExecutor:
     def _set_3tier_tp(self, symbol: str, side: str, size: float, 
                       tp1: float, entry: float) -> list:
         """Set 3-tier take profit levels"""
-        # Split position into 3 parts
-        tp_size = size // 3
+        # Split position into 3 parts (use float division, not integer)
+        tp_size = size / 3
+        # Round to lot size
+        tp_size = self.client.round_size_to_lot(symbol, tp_size)
+        
+        # Last TP gets the remainder to ensure complete position closure
         remaining = size - (tp_size * 2)
+        remaining = self.client.round_size_to_lot(symbol, remaining)
+        
+        # Verify total adds up
+        total_allocated = (tp_size * 2) + remaining
+        if abs(total_allocated - size) > 0.0001:
+            logger.warning(f"⚠️ Position split mismatch: {total_allocated} vs {size}")
         
         # Calculate TP levels (TP2 and TP3 based on TP1 distance)
         tp_distance = abs(tp1 - entry)
@@ -208,7 +222,8 @@ class TradeExecutor:
         
         logger.info(f"  TP1: {tp_size} @ ${tp1:.6f}")
         logger.info(f"  TP2: {tp_size} @ ${tp2:.6f}")
-        logger.info(f"  TP3: {remaining} @ ${tp3:.6f}")
+        logger.info(f"  TP3: {remaining} @ ${tp3:.6f} (remainder to ensure full closure)")
+        logger.info(f"  Total: {tp_size} + {tp_size} + {remaining} = {(tp_size * 2) + remaining}")
         
         results = []
         

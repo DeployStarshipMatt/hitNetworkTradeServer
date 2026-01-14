@@ -84,7 +84,7 @@ def get_algo_orders(client: BloFinClient, symbol: str) -> List[Dict[str, Any]]:
         List of algo order dictionaries
     """
     try:
-        response = client._request("GET", "/api/v1/trade/orders-algo-pending", {
+        response = client._request("GET", "/api/v1/copytrading/trade/pending-tpsl-by-contract", {
             "instId": symbol,
             "orderType": "trigger"
         })
@@ -146,8 +146,7 @@ def cancel_algo_order(client: BloFinClient, symbol: str, algo_id: str) -> bool:
         True if successful
     """
     try:
-        result = client._request("POST", "/api/v1/trade/cancel-algo", {
-            "instId": symbol,
+        result = client._request("POST", "/api/v1/copytrading/trade/cancel-tpsl-by-contract", {
             "algoId": algo_id
         })
         return result.get('code') == '0'
@@ -176,6 +175,94 @@ def cancel_all_algo_orders(client: BloFinClient, symbol: str) -> int:
             logger.info(f"Canceled {order['algoId']}")
     
     return canceled
+
+
+def cleanup_orphaned_tp_orders(client: BloFinClient, symbol: str) -> int:
+    """
+    Clean up orphaned take profit orders when position is closed.
+    
+    When a stop loss is hit, the position closes but TP orders remain pending.
+    This function detects if position is closed and cancels any remaining algo orders.
+    
+    Args:
+        client: BloFinClient instance
+        symbol: Trading pair
+        
+    Returns:
+        Number of orders canceled
+    """
+    # Get position
+    position = get_position(client, symbol)
+    
+    # Check if position is closed (size is 0)
+    if position:
+        pos_size = float(position.get('positions', 0))
+        if pos_size != 0:
+            logger.debug(f"{symbol} has active position ({pos_size}), no cleanup needed")
+            return 0
+    
+    # Position is closed - cancel all algo orders (orphaned TPs)
+    orders = get_algo_orders(client, symbol)
+    if not orders:
+        return 0
+    
+    logger.info(f"🧹 Position closed for {symbol}, cleaning up {len(orders)} orphaned algo orders...")
+    canceled = 0
+    
+    for order in orders:
+        if cancel_algo_order(client, symbol, order['algoId']):
+            canceled += 1
+            logger.info(f"  ✅ Canceled orphaned order: {order['algoId']}")
+    
+    if canceled > 0:
+        logger.info(f"✅ Cleaned up {canceled} orphaned orders for {symbol}")
+    
+    return canceled
+
+
+def cleanup_all_orphaned_orders(client: BloFinClient) -> Dict[str, int]:
+    """
+    Scan all trading pairs and clean up orphaned orders.
+    
+    Returns:
+        Dict mapping symbol to number of orders canceled
+    """
+    logger.info("🔍 Scanning for orphaned orders...")
+    
+    # Get all positions (including closed ones might have pending orders)
+    # We'll check all supported pairs from the pairs file
+    import os
+    import json
+    
+    pairs_file = os.path.join(os.path.dirname(__file__), 'blofin_pairs.json')
+    symbols_to_check = set()
+    
+    # Load supported pairs
+    if os.path.exists(pairs_file):
+        with open(pairs_file, 'r') as f:
+            data = json.load(f)
+            symbols_to_check = set(data.get('pairs', []))
+    
+    # Also check all current positions
+    positions = get_all_positions(client)
+    for pos in positions:
+        symbols_to_check.add(pos['instId'])
+    
+    results = {}
+    total_cleaned = 0
+    
+    for symbol in symbols_to_check:
+        canceled = cleanup_orphaned_tp_orders(client, symbol)
+        if canceled > 0:
+            results[symbol] = canceled
+            total_cleaned += canceled
+    
+    if total_cleaned > 0:
+        logger.info(f"✅ Total cleanup: {total_cleaned} orphaned orders across {len(results)} symbols")
+    else:
+        logger.info("✅ No orphaned orders found")
+    
+    return results
 
 
 def set_position_protection(client: BloFinClient, symbol: str, stop_loss: float, 
@@ -223,8 +310,12 @@ def set_position_protection(client: BloFinClient, symbol: str, stop_loss: float,
         # 3-tier TP - split position equally
         tp_size = abs_size / 3
         tp_size = client.round_size_to_lot(symbol, tp_size)
+        
+        # Last TP gets remainder to ensure complete position closure
         remaining = abs_size - (tp_size * 2)
         remaining = client.round_size_to_lot(symbol, remaining)
+        
+        logger.info(f"Splitting {abs_size}: TP1={tp_size}, TP2={tp_size}, TP3={remaining} (total={(tp_size*2)+remaining})")
         
         try:
             tp1_result = client.set_take_profit(symbol, close_side, take_profit, tp_size)
@@ -245,7 +336,7 @@ def set_position_protection(client: BloFinClient, symbol: str, stop_loss: float,
         try:
             tp3_result = client.set_take_profit(symbol, close_side, tp3, remaining)
             results['tp3'] = tp3_result
-            logger.info(f"TP3 set: {tp3_result['order_id']}")
+            logger.info(f"TP3 set: {tp3_result['order_id']} (remainder for complete closure)")
         except Exception as e:
             logger.error(f"Failed to set TP3: {e}")
             results['tp3'] = {'error': str(e)}

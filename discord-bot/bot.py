@@ -340,6 +340,64 @@ class TradingBot(commands.Bot):
         
         return True
     
+    @commands.command(name='update')
+    async def update_command(self, ctx):
+        """Get current account status and active trades."""
+        try:
+            # Get account data from trading server
+            response = requests.get(
+                f"{TRADING_SERVER_URL}/api/v1/account/status",
+                headers={"X-API-Key": TRADING_SERVER_API_KEY},
+                timeout=10
+            )
+            
+            if response.status_code != 200:
+                await ctx.send(f"❌ Failed to get account status: {response.status_code}")
+                return
+            
+            data = response.json()
+            
+            # Format header
+            available = data.get('available_balance', 0)
+            equity = data.get('total_equity', 0)
+            
+            msg = f"📊 **Account Status**\n\n"
+            msg += f"💰 **Balance:** ${available:.2f}\n"
+            msg += f"💼 **Equity:** ${equity:.2f}\n\n"
+            
+            # Format positions
+            positions = data.get('positions', [])
+            if positions and len(positions) > 0:
+                msg += f"📈 **Active Trades ({len(positions)}):**\n\n"
+                
+                for pos in positions:
+                    if float(pos.get('size', 0)) != 0:
+                        symbol = pos['symbol']
+                        size = float(pos['size'])
+                        side = "🟢 LONG" if size > 0 else "🔴 SHORT"
+                        size_abs = abs(size)
+                        entry = float(pos['entry_price'])
+                        current = float(pos['current_price'])
+                        pnl = float(pos['pnl'])
+                        pnl_pct = float(pos['pnl_percent'])
+                        
+                        pnl_emoji = "📈" if pnl >= 0 else "📉"
+                        
+                        msg += f"{side} **{symbol}**\n"
+                        msg += f"  Size: {size_abs:.4f} contracts\n"
+                        msg += f"  Entry: ${entry:.4f} | Current: ${current:.4f}\n"
+                        msg += f"  {pnl_emoji} P&L: ${pnl:.2f} ({pnl_pct:+.2f}%)\n\n"
+            else:
+                msg += "✅ **No Active Trades**\n\n"
+            
+            msg += f"_Last updated: {data.get('timestamp', 'N/A')}_"
+            
+            await ctx.send(msg)
+            
+        except Exception as e:
+            logger.error(f"Error in update command: {e}")
+            await ctx.send(f"❌ Error getting account status: {str(e)}")
+    
     @commands.command(name='stats')
     async def stats_command(self, ctx):
         """Show bot statistics."""

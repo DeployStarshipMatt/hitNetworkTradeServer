@@ -44,6 +44,9 @@ if signal:
     print(f"   Entry: {signal.entry_price}")
     print(f"   Stop Loss: {signal.stop_loss}")
     print(f"   Take Profit: {signal.take_profit}")
+    print(f"   TP2: {signal.take_profit_2}")
+    print(f"   TP3: {signal.take_profit_3}")
+    print(f"   Leverage: {signal.leverage}x" if signal.leverage else "   Leverage: Not specified")
     print(f"   Size: {signal.size}")
 else:
     print("❌ Failed to parse signal")
