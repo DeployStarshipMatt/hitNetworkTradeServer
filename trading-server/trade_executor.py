@@ -11,6 +11,7 @@ Handles complete trade execution with proper risk management:
 import logging
 from typing import Dict, Any, Optional
 from blofin_client import BloFinClient
+import trading_utils
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,12 @@ class TradeExecutor:
         logger.info(f"=" * 60)
         
         try:
+            # 0. CRITICAL: Clean up any orphaned TP orders from previous trades
+            logger.info(f"🧹 Checking for orphaned orders on {symbol}...")
+            canceled = trading_utils.cleanup_orphaned_tp_orders(self.client, symbol)
+            if canceled > 0:
+                logger.warning(f"⚠️ Cleaned up {canceled} orphaned orders before new trade")
+            
             # 1. Validate inputs
             self._validate_trade_params(symbol, side, entry_price, stop_loss, take_profit)
             

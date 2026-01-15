@@ -56,7 +56,7 @@ PAIRS_FILE = os.path.join(os.path.dirname(__file__), 'blofin_pairs.json')
 PAIRS_UPDATE_INTERVAL = 86400  # 24 hours in seconds
 
 # Cleanup Configuration
-CLEANUP_INTERVAL = 1800  # Clean up orphaned orders every 30 minutes
+CLEANUP_INTERVAL = 300  # Clean up orphaned orders every 5 minutes (additional safety on top of pre-trade cleanup)
 
 # Order Monitoring
 ORDER_MONITOR_INTERVAL = 30  # Check TP/SL orders every 30 seconds
@@ -150,7 +150,7 @@ def pairs_update_worker():
         update_supported_pairs()
 
 def orphaned_orders_cleanup_worker():
-    """Background worker to clean up orphaned TP orders every 30 minutes"""
+    """Background worker to clean up orphaned TP orders every 5 minutes"""
     while True:
         time.sleep(CLEANUP_INTERVAL)
         if blofin_client:
