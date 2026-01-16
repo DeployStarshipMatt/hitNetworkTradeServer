@@ -421,6 +421,11 @@ class BloFinClient:
         """
         # Round size according to instrument specifications
         rounded_size = self.round_size_to_lot(symbol, size)
+        # TPSL orders require integer contract quantities
+        rounded_size = int(round(rounded_size))
+        
+        if rounded_size == 0:
+            raise ValueError(f"Position size too small for {symbol}: {size} contracts rounds to 0")
         
         payload = {
             "instId": symbol,
@@ -469,24 +474,25 @@ class BloFinClient:
         
         # Split position equally across all TPs
         num_tps = len(tp_prices)
-        size_per_tp = total_size / num_tps
         
-        # Round each split to lot size
-        size_per_tp_rounded = self.round_size_to_lot(symbol, size_per_tp)
+        # Ensure total_size is an integer for TPSL orders
+        total_size_int = int(round(total_size))
         
-        # Calculate how much has been allocated to first N-1 TPs
-        allocated = size_per_tp_rounded * (num_tps - 1)
+        # Split evenly using integer division
+        size_per_tp = total_size_int // num_tps
         
-        # Last TP gets the remainder to ensure full position closure
-        last_tp_size = total_size - allocated
-        last_tp_size = self.round_size_to_lot(symbol, last_tp_size)
+        # Calculate remainder for last TP
+        remainder = total_size_int % num_tps
         
-        logger.info(f"Splitting {total_size} across {num_tps} TPs: {size_per_tp_rounded} each, last TP: {last_tp_size}")
+        # Last TP gets the base split plus any remainder
+        last_tp_size = size_per_tp + remainder
+        
+        logger.info(f"Splitting {total_size_int} contracts across {num_tps} TPs: {size_per_tp} each, last TP: {last_tp_size}")
         
         results = []
         for i, tp_price in enumerate(tp_prices, 1):
             # Use remainder for last TP to ensure complete closure
-            tp_size = last_tp_size if i == num_tps else size_per_tp_rounded
+            tp_size = last_tp_size if i == num_tps else size_per_tp
             
             try:
                 result = self.set_take_profit(
@@ -524,6 +530,11 @@ class BloFinClient:
         """
         # Round size according to instrument specifications
         rounded_size = self.round_size_to_lot(symbol, size)
+        # TPSL orders require integer contract quantities
+        rounded_size = int(round(rounded_size))
+        
+        if rounded_size == 0:
+            raise ValueError(f"Position size too small for {symbol}: {size} contracts rounds to 0")
         
         payload = {
             "instId": symbol,

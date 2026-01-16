@@ -292,9 +292,9 @@ class TradingBot(commands.Bot):
                     fields=[
                         {"name": "Symbol", "value": signal.symbol, "inline": True},
                         {"name": "Side", "value": signal.side.upper(), "inline": True},
-                        {"name": "Entry", "value": f"${signal.entry_price:.6f}", "inline": True},
-                        {"name": "Stop Loss", "value": f"${signal.stop_loss:.6f}", "inline": True},
-                        {"name": "Take Profit", "value": f"${signal.take_profit_1:.6f}", "inline": True},
+                        {"name": "Entry", "value": f"${signal.entry_price:.6f}" if signal.entry_price else "Market", "inline": True},
+                        {"name": "Stop Loss", "value": f"${signal.stop_loss:.6f}" if signal.stop_loss else "N/A", "inline": True},
+                        {"name": "Take Profit", "value": f"${signal.take_profit:.6f}" if signal.take_profit else "N/A", "inline": True},
                         {"name": "Order ID", "value": response.order_id or "N/A", "inline": False}
                     ]
                 )

@@ -383,28 +383,28 @@ def send_discord_notification(
         
         # Add price fields if available
         if entry_price:
-            embed["fields"].insert(1, {"name": "Entry Price", "value": f"${entry_price:.2f}", "inline": True})
+            embed["fields"].insert(1, {"name": "Entry Price", "value": f"${entry_price:.4f}", "inline": True})
         
         # Add risk information
         if risk_percent and risk_amount:
             embed["fields"].append({"name": "⚠️ Risk", "value": f"{risk_percent}% (${risk_amount:.2f})", "inline": True})
         
         if stop_loss:
-            embed["fields"].append({"name": "🛑 Stop Loss", "value": f"${stop_loss:.2f}", "inline": True})
+            embed["fields"].append({"name": "🛑 Stop Loss", "value": f"${stop_loss:.4f}", "inline": True})
         
         # Add all take profit levels with profit dollars
         if take_profit:
-            tp_value = f"${take_profit:.2f}"
+            tp_value = f"${take_profit:.4f}"
             if len(tp_profits) > 0:
                 tp_value += f" (+${tp_profits[0]:.2f})"
             embed["fields"].append({"name": "🎯 TP1", "value": tp_value, "inline": True})
         if take_profit_2:
-            tp_value = f"${take_profit_2:.2f}"
+            tp_value = f"${take_profit_2:.4f}"
             if len(tp_profits) > 1:
                 tp_value += f" (+${tp_profits[1]:.2f})"
             embed["fields"].append({"name": "🎯 TP2", "value": tp_value, "inline": True})
         if take_profit_3:
-            tp_value = f"${take_profit_3:.2f}"
+            tp_value = f"${take_profit_3:.4f}"
             if len(tp_profits) > 2:
                 tp_value += f" (+${tp_profits[2]:.2f})"
             embed["fields"].append({"name": "🎯 TP3", "value": tp_value, "inline": True})
