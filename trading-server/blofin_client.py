@@ -250,11 +250,17 @@ class BloFinClient:
         
         Args:
             symbol: Trading pair
-            size: Desired position size
+            size: Desired position size (can be negative for fractional positions like -0.33)
             
         Returns:
-            Rounded size that meets lot size requirements
+            Rounded size that meets lot size requirements, or passthrough for negative values
         """
+        # If size is negative (fractional position like -0.33, -0.5, -1), pass through as-is
+        if isinstance(size, str) and size.startswith('-'):
+            return size
+        if isinstance(size, (int, float)) and size < 0:
+            return size
+        
         spec = self.get_instrument_info(symbol)
         lot_size = spec['lotSize']
         min_size = spec['minSize']
@@ -404,61 +410,130 @@ class BloFinClient:
             logger.error(f"❌ Failed to place limit order: {e}")
             raise
     
-    def set_stop_loss(self, symbol: str, side: str, trigger_price: float, size: float,
-                     trade_mode: str = "cross") -> Dict[str, Any]:
+    def place_reduce_only_limit_order(self, symbol: str, side: str, size: float, price: float,
+                                      trade_mode: str = "cross", position_side: str = "net") -> Dict[str, Any]:
         """
-        Set stop loss order using algo order endpoint.
+        Place a reduce-only limit order for take-profit scaling.
+        Multiple reduce-only orders can be active simultaneously.
         
         Args:
             symbol: Trading pair
-            side: Order side (opposite of position)
-            trigger_price: Stop loss trigger price
-            size: Order size
+            side: Order side (opposite of position - "sell" for long, "buy" for short)
+            size: Order size (portion of position to close)
+            price: Limit price (TP target)
+            trade_mode: cross or isolated
+            position_side: "net" for one-way, "long"/"short" for hedge mode
+            
+        Returns:
+            Order response
+        """
+        # Normalize side
+        if side.lower() in ["long", "buy"]:
+            api_side = "buy"
+        elif side.lower() in ["short", "sell"]:
+            api_side = "sell"
+        else:
+            raise ValueError(f"Invalid side: {side}")
+        
+        # Round size according to instrument specifications
+        rounded_size = self.round_size_to_lot(symbol, size)
+        
+        payload = {
+            "instId": symbol,
+            "marginMode": trade_mode,
+            "positionSide": position_side,
+            "side": api_side,
+            "orderType": "limit",
+            "size": str(rounded_size),
+            "price": str(price),
+            "reduceOnly": "true"  # Critical: ensures this only closes position
+        }
+        
+        logger.info(f"Placing reduce-only TP: {api_side} {rounded_size} {symbol} @ {price}")
+        
+        try:
+            response = self._request("POST", "/api/v1/copytrading/trade/place-order", payload)
+            self.stats['orders_placed'] += 1
+            
+            # Response is a list of orders, get the first one
+            if isinstance(response, list) and len(response) > 0:
+                order_data = response[0]
+            else:
+                order_data = response
+            
+            order_id = order_data.get('ordId') if isinstance(order_data, dict) else None
+            logger.info(f"✅ Reduce-only TP order placed: {order_id} @ ${price}")
+            
+            return {
+                'order_id': order_id,
+                'symbol': symbol,
+                'side': api_side,
+                'size': rounded_size,
+                'price': price,
+                'type': 'limit_reduce_only',
+                'status': 'submitted'
+            }
+        
+        except Exception as e:
+            self.stats['orders_failed'] += 1
+            logger.error(f"❌ Failed to place reduce-only order: {e}")
+            raise
+    
+    def set_tpsl_pair(self, symbol: str, tp_price: float, sl_price: float, size: float,
+                      trade_mode: str = "cross") -> Dict[str, Any]:
+        """
+        Set a take-profit and stop-loss pair for a portion of the position.
+        BloFin copytrading API requires BOTH tp and sl trigger prices.
+        
+        Args:
+            symbol: Trading pair
+            tp_price: Take profit trigger price
+            sl_price: Stop loss trigger price
+            size: Order size for this TP/SL pair
             trade_mode: cross or isolated
             
         Returns:
             Order response
         """
-        # Round size according to instrument specifications (same as market orders)
+        # Round size according to instrument specifications
         rounded_size = self.round_size_to_lot(symbol, size)
         
         payload = {
             "instId": symbol,
             "marginMode": trade_mode,
             "positionSide": "net",
-            "slTriggerPrice": str(trigger_price),
-            "tpTriggerPrice": "",
+            "tpTriggerPrice": str(tp_price),
+            "slTriggerPrice": str(sl_price),
             "size": str(rounded_size)
         }
         
-        logger.info(f"Setting stop loss: {symbol} @ {trigger_price} (size: {rounded_size}, requested: {size})")
-        logger.info(f"🔍 SL PAYLOAD: {payload}")
+        logger.info(f"Setting TP/SL pair: {symbol} TP@{tp_price} SL@{sl_price} (size: {rounded_size})")
         
         try:
             response = self._request("POST", "/api/v1/copytrading/trade/place-tpsl-by-contract", payload)
             algo_id = response.get('algoId')
-            logger.info(f"✅ Stop loss set: {algo_id}")
-            return {'order_id': algo_id, 'type': 'stop_loss'}
+            logger.info(f"✅ TP/SL pair set: {algo_id}")
+            return {'order_id': algo_id, 'type': 'tpsl_pair', 'tp': tp_price, 'sl': sl_price, 'size': rounded_size}
         
         except Exception as e:
-            logger.error(f"❌ Failed to set stop loss: {e}")
+            logger.error(f"❌ Failed to set TP/SL pair: {e}")
             raise
     
-    def set_multiple_take_profits(self, symbol: str, side: str, total_size: float,
-                                  tp_prices: list, trade_mode: str = "cross") -> list:
+    def set_multiple_tpsl(self, symbol: str, total_size: float, sl_price: float,
+                          tp_prices: list, trade_mode: str = "cross") -> list:
         """
-        Set multiple take profit orders with position split across them.
-        Splits position equally across all provided TP levels.
+        Set multiple TP/SL pairs with position split across TP levels.
+        Each TP level gets the same SL, splitting the position equally.
         
         Args:
             symbol: Trading pair
-            side: Order side (buy/sell)
             total_size: Total position size to split
+            sl_price: Stop loss price (same for all TP levels)
             tp_prices: List of TP prices [tp1, tp2, tp3, ...]
             trade_mode: Trading mode (cross/isolated)
         
         Returns:
-            List of order results for each TP
+            List of order results for each TP/SL pair
         """
         if not tp_prices:
             return []
@@ -485,70 +560,29 @@ class BloFinClient:
             num_tps = 1
             size_per_tp = total_size
         
-        logger.info(f"Splitting {total_size} contracts across {num_tps} TPs: {size_per_tp} each")
+        logger.info(f"Splitting {total_size} contracts across {num_tps} TP/SL pairs: {size_per_tp} each")
+        logger.info(f"SL: {sl_price}, TPs: {tp_prices}")
         
         results = []
         for i, tp_price in enumerate(tp_prices, 1):
             tp_size = size_per_tp
             
             try:
-                result = self.set_take_profit(
+                result = self.set_tpsl_pair(
                     symbol=symbol,
-                    side=side,
+                    tp_price=tp_price,
+                    sl_price=sl_price,
                     size=tp_size,
-                    trigger_price=tp_price,
                     trade_mode=trade_mode
                 )
-                # Add size to result for tracking
-                result['size'] = tp_size
                 result['tp_level'] = i
-                logger.info(f"✅ Take profit {i}/{num_tps} set @ {tp_price} for {tp_size} contracts")
+                logger.info(f"✅ TP/SL pair {i}/{num_tps} set: TP@{tp_price} SL@{sl_price} for {tp_size} contracts")
                 results.append(result)
             except Exception as e:
-                logger.warning(f"⚠️ Failed to set TP{i} @ {tp_price}: {e}")
+                logger.warning(f"⚠️ Failed to set TP{i}/SL @ TP:{tp_price} SL:{sl_price}: {e}")
                 results.append({'error': str(e), 'tp_level': i, 'size': tp_size})
         
         return results
-    
-    def set_take_profit(self, symbol: str, side: str, trigger_price: float, size: float,
-                       trade_mode: str = "cross") -> Dict[str, Any]:
-        """
-        Set take profit order using algo order endpoint.
-        
-        Args:
-            symbol: Trading pair
-            side: Order side (opposite of position)
-            trigger_price: Take profit trigger price
-            size: Order size
-            trade_mode: cross or isolated
-            
-        Returns:
-            Order response
-        """
-        # Round size according to instrument specifications (same as market orders)
-        rounded_size = self.round_size_to_lot(symbol, size)
-        
-        payload = {
-            "instId": symbol,
-            "marginMode": trade_mode,
-            "positionSide": "net",
-            "tpTriggerPrice": str(trigger_price),
-            "slTriggerPrice": "",
-            "size": str(rounded_size)
-        }
-        
-        logger.info(f"Setting take profit: {symbol} @ {trigger_price} (size: {rounded_size}, requested: {size})")
-        logger.info(f"🔍 TP PAYLOAD: {payload}")
-        
-        try:
-            response = self._request("POST", "/api/v1/copytrading/trade/place-tpsl-by-contract", payload)
-            algo_id = response.get('algoId')
-            logger.info(f"✅ Take profit set: {algo_id}")
-            return {'order_id': algo_id, 'type': 'take_profit'}
-        
-        except Exception as e:
-            logger.error(f"❌ Failed to set take profit: {e}")
-            raise
     
     def get_ticker(self, symbol: str) -> Dict[str, Any]:
         """
