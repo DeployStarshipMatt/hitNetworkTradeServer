@@ -479,6 +479,34 @@ class BloFinClient:
             logger.error(f"❌ Failed to place reduce-only order: {e}")
             raise
     
+    def cancel_tpsl(self, symbol: str, size: str = "-1") -> Dict[str, Any]:
+        """
+        Cancel existing TP/SL orders for a position.
+        
+        Args:
+            symbol: Trading pair
+            size: "-1" for all TP/SL orders, or specific size
+            
+        Returns:
+            Cancel response
+        """
+        payload = {
+            "instId": symbol,
+            "marginMode": "cross",
+            "positionSide": "net",
+            "size": size
+        }
+        
+        logger.info(f"Canceling TP/SL orders: {symbol}")
+        
+        try:
+            response = self._request("POST", "/api/v1/copytrading/trade/cancel-tpsl-by-contract", payload)
+            logger.info(f"✅ TP/SL orders canceled")
+            return response
+        except Exception as e:
+            logger.error(f"❌ Failed to cancel TP/SL: {e}")
+            raise
+    
     def set_tpsl_pair(self, symbol: str, tp_price: float, sl_price: float, size: float,
                       trade_mode: str = "cross") -> Dict[str, Any]:
         """
@@ -630,6 +658,23 @@ class BloFinClient:
         except Exception as e:
             logger.error(f"Failed to get positions: {e}")
             raise
+    
+    def get_pending_tpsl(self, symbol: str) -> List[Dict[str, Any]]:
+        """
+        Get pending TP/SL orders for a symbol.
+        
+        Args:
+            symbol: Trading pair (e.g., BTC-USDT)
+            
+        Returns:
+            List of pending TP/SL orders
+        """
+        try:
+            response = self._request("GET", f"/api/v1/copytrading/trade/pending-tpsl-by-contract?instId={symbol}")
+            return response if isinstance(response, list) else []
+        except Exception as e:
+            logger.error(f"Failed to get pending TP/SL for {symbol}: {e}")
+            return []
     
     def get_order_status(self, symbol: str, order_id: str) -> Dict[str, Any]:
         """

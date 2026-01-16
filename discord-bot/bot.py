@@ -404,7 +404,18 @@ async def cmd_update(ctx):
                     msg += f"{side} **{symbol}**\n"
                     msg += f"  Size: {size_abs:.4f} contracts\n"
                     msg += f"  Entry: ${entry:.4f} | Current: ${current:.4f}\n"
-                    msg += f"  {pnl_emoji} P&L: ${pnl:.2f} ({pnl_pct:+.2f}%)\n\n"
+                    msg += f"  {pnl_emoji} P&L: ${pnl:.2f} ({pnl_pct:+.2f}%)\n"
+                    
+                    # Display TP/SL if available
+                    tp_levels = pos.get('tp_levels', [])
+                    sl_price = pos.get('sl_price')
+                    if tp_levels or sl_price:
+                        if tp_levels:
+                            tp_str = " | ".join([f"${tp:.4f}" for tp in sorted(tp_levels)])
+                            msg += f"  🎯 TP: {tp_str}\n"
+                        if sl_price:
+                            msg += f"  🛑 SL: ${sl_price:.4f}\n"
+                    msg += "\n"
         else:
             msg += "✅ **No Active Trades**\n\n"
         

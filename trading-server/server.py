@@ -803,13 +803,30 @@ async def get_account_status(authenticated: bool = Depends(verify_api_key)):
             notional = abs(size) * entry_price
             pnl_percent = (pnl / notional * 100) if notional > 0 else 0
             
+            # Get TP/SL orders for this position
+            tp_sl_data = {'tp_levels': [], 'sl_price': None}
+            try:
+                pending_tpsl = blofin_client.get_pending_tpsl(symbol)
+                if pending_tpsl:
+                    for order in pending_tpsl:
+                        tp_price = order.get('tpTriggerPrice')
+                        sl_price = order.get('slTriggerPrice')
+                        if tp_price:
+                            tp_sl_data['tp_levels'].append(float(tp_price))
+                        if sl_price and not tp_sl_data['sl_price']:
+                            tp_sl_data['sl_price'] = float(sl_price)
+            except:
+                pass  # TP/SL fetch failed, continue without it
+            
             formatted_positions.append({
                 'symbol': symbol,
                 'size': size,
                 'entry_price': entry_price,
                 'current_price': current_price,
                 'pnl': pnl,
-                'pnl_percent': pnl_percent
+                'pnl_percent': pnl_percent,
+                'tp_levels': tp_sl_data['tp_levels'],
+                'sl_price': tp_sl_data['sl_price']
             })
         
         return {
