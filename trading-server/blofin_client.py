@@ -262,10 +262,10 @@ class BloFinClient:
         # Round to nearest lot size increment
         rounded = round(size / lot_size) * lot_size
         
-        # Ensure minimum size - if below minimum, FAIL (don't auto-bump)
+        # If below minimum, round UP to minimum
         if rounded < min_size:
-            logger.error(f"❌ Position size {size} below minimum {min_size} for {symbol}")
-            raise ValueError(f"Position size {size} is below exchange minimum {min_size} for {symbol}. Increase risk amount or choose a different symbol.")
+            rounded = min_size
+            logger.info(f"Position size {size} below minimum {min_size} for {symbol}, using minimum")
         
         # For lot sizes >= 1, return as integer
         if lot_size >= 1:
