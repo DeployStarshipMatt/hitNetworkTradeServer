@@ -36,6 +36,10 @@ class OrderMonitor:
         # Track orders we've already notified about
         self.notified_orders: Set[str] = set()
         
+        # Track cascading TP configurations
+        # Key: symbol, Value: {entry_price, sl_price, next_tp_configs: [(tp_price, size, tp_type)]}
+        self.cascading_tps: Dict[str, Dict] = {}
+        
         logger.info(f"📡 Order Monitor initialized (check interval: {check_interval}s)")
     
     def track_order(self, symbol: str, order_id: str, order_type: str, 
@@ -49,7 +53,7 @@ class OrderMonitor:
             order_id: Algo order ID
             order_type: 'TP1', 'TP2', 'TP3', or 'SL'
             trigger_price: Trigger price
-            size: Order size
+            size: Order size (can be negative for fractional positions)
             side: Order side
             entry_price: Entry price for profit calculation
         """
@@ -63,6 +67,27 @@ class OrderMonitor:
             'tracked_since': datetime.utcnow().isoformat()
         }
         logger.info(f"📍 Tracking {order_type} order: {symbol} {order_id} @ ${trigger_price}")
+    
+    def setup_cascading_tps(self, symbol: str, entry_price: float, sl_price: float, 
+                           tp_configs: list, trade_mode: str = "cross"):
+        """
+        Setup cascading TP levels that auto-create when previous TP fills.
+        
+        Args:
+            symbol: Trading pair
+            entry_price: Position entry price
+            sl_price: Stop loss price (same for all TPs)
+            tp_configs: List of (tp_price, size, tp_type) tuples
+                       size can be fractional: -0.33, -0.5, -1
+            trade_mode: 'cross' or 'isolated'
+        """
+        self.cascading_tps[symbol] = {
+            'entry_price': entry_price,
+            'sl_price': sl_price,
+            'next_tp_configs': tp_configs,  # Queue of next TPs to create
+            'trade_mode': trade_mode
+        }
+        logger.info(f"🎯 Setup cascading TPs for {symbol}: {len(tp_configs)} levels queued")
     
     def check_orders(self):
         """
@@ -136,6 +161,10 @@ class OrderMonitor:
             pnl=pnl,
             is_tp=is_tp
         )
+        
+        # If this was a TP and we have cascading TPs configured, create next level
+        if is_tp and symbol in self.cascading_tps:
+            self._create_next_tp_level(symbol)
     
     def _send_notification(self, symbol: str, order_type: str, trigger_price: float,
                           size: float, pnl: float, is_tp: bool):
@@ -191,10 +220,64 @@ class OrderMonitor:
         except Exception as e:
             logger.error(f"Error sending Discord notification: {e}")
     
+    def _create_next_tp_level(self, symbol: str):
+        """
+        Create the next TP level for a symbol after previous TP filled.
+        
+        Args:
+            symbol: Trading pair
+        """
+        if symbol not in self.cascading_tps:
+            return
+        
+        config = self.cascading_tps[symbol]
+        next_tps = config['next_tp_configs']
+        
+        if not next_tps:
+            logger.info(f"✅ All TP levels completed for {symbol}")
+            del self.cascading_tps[symbol]
+            return
+        
+        # Pop next TP configuration
+        tp_price, size, tp_type = next_tps.pop(0)
+        sl_price = config['sl_price']
+        trade_mode = config['trade_mode']
+        
+        logger.info(f"🔄 Creating next TP level: {symbol} {tp_type} @ ${tp_price} (size: {size})")
+        
+        try:
+            # Create the next TP/SL order
+            result = self.client.set_tpsl_pair(
+                symbol=symbol,
+                tp_price=tp_price,
+                sl_price=sl_price,
+                size=str(size),  # Can be "-0.33", "-0.5", "-1"
+                trade_mode=trade_mode
+            )
+            
+            # Extract order ID and track it
+            if isinstance(result, dict) and 'data' in result:
+                order_id = result['data'][0].get('algoId')
+                if order_id:
+                    self.track_order(
+                        symbol=symbol,
+                        order_id=order_id,
+                        order_type=tp_type,
+                        trigger_price=tp_price,
+                        size=size,
+                        side='sell',  # Assume long position
+                        entry_price=config['entry_price']
+                    )
+                    logger.info(f"✅ {tp_type} created: {order_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to create next TP level for {symbol}: {e}")
+    
     def get_stats(self) -> Dict:
         """Get monitoring statistics."""
         return {
             'tracked_orders': len(self.tracked_orders),
             'notified_orders': len(self.notified_orders),
-            'tracked_order_ids': list(self.tracked_orders.keys())
+            'tracked_order_ids': list(self.tracked_orders.keys()),
+            'cascading_symbols': list(self.cascading_tps.keys())
         }

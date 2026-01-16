@@ -21,6 +21,7 @@ import time
 
 # Add parent directory to path for shared imports
 sys.path.append(str(Path(__file__).parent.parent))
+sys.path.append(str(Path(__file__).parent))
 
 from blofin_client import BloFinClient
 from shared.models import TradeSignal, TradeResponse, HealthCheck
@@ -591,37 +592,7 @@ async def execute_trade(
             import time
             time.sleep(1.5)
             
-            # Set stop loss if provided
-            sl_order_id = None
-            if trade_signal.stop_loss:
-                try:
-                    # Determine opposite side for SL
-                    sl_side = "sell" if trade_signal.side in ["long", "buy"] else "buy"
-                    sl_result = blofin_client.set_stop_loss(
-                        symbol=trade_signal.symbol,
-                        side=sl_side,
-                        size=position_size,
-                        trigger_price=trade_signal.stop_loss,
-                        trade_mode=DEFAULT_TRADE_MODE
-                    )
-                    sl_order_id = sl_result.get('order_id')
-                    logger.info(f"✅ Stop loss set @ {trade_signal.stop_loss}")
-                    
-                    # Register SL with order monitor
-                    if order_monitor and sl_order_id:
-                        order_monitor.track_order(
-                            symbol=trade_signal.symbol,
-                            order_id=sl_order_id,
-                            order_type='SL',
-                            trigger_price=trade_signal.stop_loss,
-                            size=position_size,
-                            side=sl_side,
-                            entry_price=trade_signal.entry_price
-                        )
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to set stop loss: {e}")
-            
-            # Set take profits - split position if multiple TPs provided
+            # Set up cascading 3-level TPs
             tp_prices = [
                 trade_signal.take_profit,
                 trade_signal.take_profit_2,
@@ -630,63 +601,60 @@ async def execute_trade(
             # Filter out None values
             tp_prices = [tp for tp in tp_prices if tp is not None]
             
-            if tp_prices:
+            if tp_prices and trade_signal.stop_loss:
                 try:
-                    # Determine opposite side for TP
-                    tp_side = "sell" if trade_signal.side in ["long", "buy"] else "buy"
+                    # Create TP1 immediately with fractional size
+                    # Cascading: TP1=-0.33, TP2=-0.5 (when TP1 fills), TP3=-1 (when TP2 fills)
+                    if len(tp_prices) >= 3:
+                        # 3 TP levels: split 33% / 33% / 33%
+                        fractional_sizes = ["-0.33", "-0.5", "-1"]
+                    elif len(tp_prices) == 2:
+                        # 2 TP levels: split 50% / 50%
+                        fractional_sizes = ["-0.5", "-1"]
+                    else:
+                        # 1 TP level: use full position
+                        fractional_sizes = ["-1"]
                     
-                    if len(tp_prices) == 1:
-                        # Single TP - use full position
-                        tp_result = blofin_client.set_take_profit(
-                            symbol=trade_signal.symbol,
-                            side=tp_side,
-                            size=position_size,
-                            trigger_price=tp_prices[0],
-                            trade_mode=DEFAULT_TRADE_MODE
-                        )
-                        logger.info(f"✅ Take profit set @ {tp_prices[0]}")
-                        
-                        # Register with monitor
-                        if order_monitor and tp_result.get('order_id'):
+                    # Create first TP/SL immediately
+                    result = blofin_client.set_tpsl_pair(
+                        symbol=trade_signal.symbol,
+                        tp_price=tp_prices[0],
+                        sl_price=trade_signal.stop_loss,
+                        size=fractional_sizes[0],
+                        trade_mode=DEFAULT_TRADE_MODE
+                    )
+                    logger.info(f"✅ Set TP1 @ {tp_prices[0]} (size: {fractional_sizes[0]})")
+                    
+                    # Track first TP order
+                    if order_monitor and isinstance(result, dict) and 'data' in result:
+                        order_id_tp = result['data'][0].get('algoId')
+                        if order_id_tp:
                             order_monitor.track_order(
                                 symbol=trade_signal.symbol,
-                                order_id=tp_result['order_id'],
+                                order_id=order_id_tp,
                                 order_type='TP1',
                                 trigger_price=tp_prices[0],
-                                size=position_size,
-                                side=tp_side,
+                                size=fractional_sizes[0],
+                                side="sell" if trade_signal.side in ["long", "buy"] else "buy",
                                 entry_price=trade_signal.entry_price
                             )
-                    else:
-                        # Multiple TPs - split position
-                        results = blofin_client.set_multiple_take_profits(
-                            symbol=trade_signal.symbol,
-                            side=tp_side,
-                            total_size=position_size,
-                            tp_prices=tp_prices,
-                            trade_mode=DEFAULT_TRADE_MODE
-                        )
-                        logger.info(f"✅ Split position across {len(tp_prices)} take profit levels")
-                        
-                        # Register each TP with monitor
-                        if order_monitor:
-                            num_tps = len(tp_prices)
-                            size_per_tp = position_size / num_tps
-                            for i, (tp_price, tp_result) in enumerate(zip(tp_prices, results), 1):
-                                if tp_result and tp_result.get('order_id'):
-                                    # Calculate actual size for this TP (last one gets remainder)
-                                    tp_size = tp_result.get('size', size_per_tp)
-                                    order_monitor.track_order(
-                                        symbol=trade_signal.symbol,
-                                        order_id=tp_result['order_id'],
-                                        order_type=f'TP{i}',
-                                        trigger_price=tp_price,
-                                        size=tp_size,
-                                        side=tp_side,
-                                        entry_price=trade_signal.entry_price
-                                    )
+                            
+                            # Setup cascading TPs (TP2, TP3 will auto-create when previous fills)
+                            if len(tp_prices) > 1:
+                                next_tp_configs = [
+                                    (tp_prices[i], fractional_sizes[i], f'TP{i+1}')
+                                    for i in range(1, len(tp_prices))
+                                ]
+                                order_monitor.setup_cascading_tps(
+                                    symbol=trade_signal.symbol,
+                                    entry_price=trade_signal.entry_price,
+                                    sl_price=trade_signal.stop_loss,
+                                    tp_configs=next_tp_configs,
+                                    trade_mode=DEFAULT_TRADE_MODE
+                                )
+                                logger.info(f"🎯 Cascading TPs configured: {len(next_tp_configs)} levels queued")
                 except Exception as e:
-                    logger.warning(f"⚠️ Failed to set take profit(s): {e}")
+                    logger.warning(f"⚠️ Failed to set TP/SL: {e}")
             
             # Send Discord notification immediately with all trade details
             position_value = position_size * (trade_signal.entry_price or 0)
