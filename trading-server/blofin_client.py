@@ -474,6 +474,17 @@ class BloFinClient:
         # Split total size evenly across TPs (can be fractional)
         size_per_tp = total_size / num_tps
         
+        # Get minimum size for this symbol
+        spec = self.get_instrument_info(symbol)
+        min_size = spec.get('minSize', 0.1)
+        
+        # If split size is below minimum, use only first TP for full position
+        if size_per_tp < min_size:
+            logger.warning(f"⚠️ Split TP size {size_per_tp} below minimum {min_size}, using single TP for full position")
+            tp_prices = [tp_prices[0]]  # Use only first TP price
+            num_tps = 1
+            size_per_tp = total_size
+        
         logger.info(f"Splitting {total_size} contracts across {num_tps} TPs: {size_per_tp} each")
         
         results = []
