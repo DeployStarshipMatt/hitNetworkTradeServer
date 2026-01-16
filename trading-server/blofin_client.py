@@ -609,7 +609,7 @@ class BloFinClient:
             Order status information
         """
         try:
-            response = self._request("GET", f"/api/v1/trade/order?instId={symbol}&ordId={order_id}")
+            response = self._request("GET", f"/api/v1/copytrading/trade/order?instId={symbol}&ordId={order_id}")
             return response
         except Exception as e:
             logger.error(f"Failed to get order status: {e}")
