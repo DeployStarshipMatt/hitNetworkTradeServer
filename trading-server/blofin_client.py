@@ -419,32 +419,14 @@ class BloFinClient:
         Returns:
             Order response
         """
-        # Round size according to instrument specifications
+        # Round size according to instrument specifications (same as market orders)
         rounded_size = self.round_size_to_lot(symbol, size)
-        
-        # TPSL endpoint requires INTEGER contracts (unlike market orders)
-        # Round UP to ensure full position coverage
-        import math
-        rounded_size = math.ceil(rounded_size)
-        
-        if rounded_size == 0:
-            raise ValueError(f"Position size too small for {symbol}: {size} contracts rounds to 0")
-        
-        # Round trigger price to avoid floating point precision issues
-        trigger_price = round(trigger_price, 6)
-        
-        # Determine positionSide based on the position direction
-        # For stop loss, if side is sell, position is long; if side is buy, position is short
-        if side.lower() in ["sell", "short"]:
-            position_side = "long"
-        else:
-            position_side = "short"
         
         payload = {
             "instId": symbol,
             "marginMode": trade_mode,
-            "positionSide": position_side,  # long or short based on position
-            "slTriggerPrice": str(int(trigger_price)),
+            "positionSide": "net",
+            "slTriggerPrice": str(trigger_price),
             "tpTriggerPrice": "",
             "size": str(rounded_size)
         }
@@ -532,32 +514,14 @@ class BloFinClient:
         Returns:
             Order response
         """
-        # Round size according to instrument specifications
+        # Round size according to instrument specifications (same as market orders)
         rounded_size = self.round_size_to_lot(symbol, size)
-        
-        # TPSL endpoint requires INTEGER contracts (unlike market orders)
-        import math
-        rounded_size = math.ceil(rounded_size)
-        
-        if rounded_size == 0:
-            raise ValueError(f"Position size too small for {symbol}: {size} contracts rounds to 0")
-        
-        # Round trigger price to prevent floating point precision issues
-        # BloFin rejects prices like 96424.99999999999
-        trigger_price = round(trigger_price, 6)
-        
-        # Determine positionSide based on the position direction
-        # For take profit, if side is sell, position is long; if side is buy, position is short
-        if side.lower() in ["sell", "short"]:
-            position_side = "long"
-        else:
-            position_side = "short"
         
         payload = {
             "instId": symbol,
             "marginMode": trade_mode,
-            "positionSide": position_side,  # long or short based on position
-            "tpTriggerPrice": str(int(trigger_price)),
+            "positionSide": "net",
+            "tpTriggerPrice": str(trigger_price),
             "slTriggerPrice": "",
             "size": str(rounded_size)
         }
