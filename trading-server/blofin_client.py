@@ -676,6 +676,26 @@ class BloFinClient:
             logger.error(f"Failed to get pending TP/SL for {symbol}: {e}")
             return []
     
+    def get_pending_orders(self, symbol: str = None) -> List[Dict[str, Any]]:
+        """
+        Get pending orders (limit orders, including reduce-only).
+        
+        Args:
+            symbol: Optional trading pair filter
+            
+        Returns:
+            List of pending orders
+        """
+        try:
+            endpoint = "/api/v1/copytrading/trade/orders-pending-by-contract"
+            if symbol:
+                endpoint += f"?instId={symbol}"
+            response = self._request("GET", endpoint)
+            return response if isinstance(response, list) else []
+        except Exception as e:
+            logger.error(f"Failed to get pending orders: {e}")
+            return []
+    
     def get_order_status(self, symbol: str, order_id: str) -> Dict[str, Any]:
         """
         Get order status.

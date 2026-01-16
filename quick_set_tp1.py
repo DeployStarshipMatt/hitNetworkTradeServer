@@ -1,19 +1,10 @@
 #!/usr/bin/env python3
 """
-Setup cascading 3-level TPs for current positions.
-
-Uses fractional position sizes:
-- TP1: -0.33 (33% of position) at +5%
-- TP2: -0.5 (50% of remaining = 33% total) at +10%
-- TP3: -1 (100% of remaining = 33% total) at +15%
-All with same SL at -5%
+Quick script: Setup TP1 for cascading 3-level TPs on current positions.
+Uses fractional size -0.33 (33% of position).
 """
 
 import sys
-import os
-
-# Add project root to path and import from trading-server directly
-sys.path.insert(0, '/opt/hitNetworkAutomation')
 sys.path.insert(0, '/opt/hitNetworkAutomation/trading-server')
 
 from blofin_client import BloFinClient
@@ -47,19 +38,20 @@ def main():
         print(f"Position: {size} contracts ({'LONG' if size > 0 else 'SHORT'})")
         print(f"Entry: ${entry}")
         
-        # Cancel any existing TP/SL orders
-        print("\n🗑️  Canceling existing TP/SL orders...")
-        pending_orders = client.get_pending_tpsl()
-        for order in pending_orders:
-            if order['instId'] == symbol:
-                algo_id = order['algoId']
-                try:
-                    client.cancel_tpsl(algo_id)
+        # First, cancel existing TP/SL
+        print("\n🗑️  Canceling existing TP/SL...")
+        try:
+            # Get pending orders via raw API call
+            pending = client._request("GET", "/api/v1/copytrading/trade/pending-tpsl-by-contract")
+            for order in pending:
+                if order['instId'] == symbol:
+                    algo_id = order['algoId']
+                    client._request("POST", "/api/v1/copytrading/trade/cancel-tpsl-by-contract", {"algoId": algo_id})
                     print(f"   ✅ Canceled order {algo_id}")
-                except Exception as e:
-                    print(f"   ❌ Failed to cancel {algo_id}: {e}")
+        except Exception as e:
+            print(f"   ⚠️  Cancel failed (might be none): {e}")
         
-        # Calculate TP/SL prices
+        # Calculate prices
         if size > 0:  # LONG
             tp1_price = round(entry * 1.05, 6)  # +5%
             tp2_price = round(entry * 1.10, 6)  # +10%
@@ -71,34 +63,35 @@ def main():
             tp3_price = round(entry * 0.85, 6)  # +15%
             sl_price = round(entry * 1.05, 6)   # -5%
         
-        print(f"\n💡 Setting up 3-level cascading TPs:")
-        print(f"   TP1: -0.33 (33%) @ ${tp1_price} (+5%)")
-        print(f"   TP2: -0.5 (50% of remaining) @ ${tp2_price} (+10%)")
-        print(f"   TP3: -1 (100% of remaining) @ ${tp3_price} (+15%)")
-        print(f"   SL:  ${sl_price} (-5%)")
+        print(f"\n🎯 Creating TP1 (33% of position)...")
         
-        # Create TP1 immediately
-        print(f"\n🎯 Creating TP1...")
+        # Calculate actual contract amounts for 3 TP levels
+        abs_size = abs(size)
+        size_tp1 = round(abs_size / 3, 1)  # 33%
+        size_tp2 = round(abs_size / 3, 1)  # 33%
+        size_tp3 = abs_size - size_tp1 - size_tp2  # Remainder (34%)
+        
+        print(f"   TP1: {size_tp1} contracts @ ${tp1_price} (+5%)")
+        print(f"   TP2: {size_tp2} contracts @ ${tp2_price} (+10%) [will auto-create]")
+        print(f"   TP3: {size_tp3} contracts @ ${tp3_price} (+15%) [will auto-create]")
+        print(f"   SL:  @ ${sl_price} (-5%)")
+        
         try:
             result = client.set_tpsl_pair(
                 symbol=symbol,
                 tp_price=tp1_price,
                 sl_price=sl_price,
-                size="-0.33",  # 33% of position
+                size=size_tp1,  # Actual contract amount
                 trade_mode="cross"
             )
             print(f"   ✅ TP1 created successfully")
-            
-            # Note: TP2 and TP3 will be created automatically by order_monitor
-            # when TP1 and TP2 fill respectively
-            print(f"   📝 TP2 and TP3 will auto-create when previous levels fill")
-            
+            print(f"   📝 TP2 (+10%) and TP3 (+15%) will auto-create when TP1 fills")
         except Exception as e:
-            print(f"   ❌ Failed to create TP1: {e}")
+            print(f"   ❌ Failed: {e}")
     
     print(f"\n{'='*60}")
-    print("✅ Done! Cascading TPs configured")
-    print("📌 Note: TP2 creates when TP1 fills, TP3 creates when TP2 fills")
+    print("✅ Done! TP1 set for all positions")
+    print("📌 TP2/TP3 will be created automatically by order_monitor when TP1 fills")
 
 if __name__ == "__main__":
     main()

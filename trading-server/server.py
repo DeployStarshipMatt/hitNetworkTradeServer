@@ -806,6 +806,7 @@ async def get_account_status(authenticated: bool = Depends(verify_api_key)):
             # Get TP/SL orders for this position
             tp_sl_data = {'tp_levels': [], 'sl_price': None}
             try:
+                # Fetch TP/SL trigger orders (old style)
                 pending_tpsl = blofin_client.get_pending_tpsl(symbol)
                 if pending_tpsl:
                     for order in pending_tpsl:
@@ -815,6 +816,16 @@ async def get_account_status(authenticated: bool = Depends(verify_api_key)):
                             tp_sl_data['tp_levels'].append(float(tp_price))
                         if sl_price and not tp_sl_data['sl_price']:
                             tp_sl_data['sl_price'] = float(sl_price)
+                
+                # Fetch reduce-only limit orders (new style TPs)
+                pending_orders = blofin_client.get_pending_orders(symbol)
+                if pending_orders:
+                    for order in pending_orders:
+                        # Check if it's a reduce-only sell order (for long positions)
+                        if order.get('reduceOnly') == 'true':
+                            order_price = order.get('price')
+                            if order_price:
+                                tp_sl_data['tp_levels'].append(float(order_price))
             except:
                 pass  # TP/SL fetch failed, continue without it
             
