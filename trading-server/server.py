@@ -587,6 +587,10 @@ async def execute_trade(
             
             order_id = order_result.get('order_id')
             
+            # Wait for position to be created before setting TPSL
+            import time
+            time.sleep(1.5)
+            
             # Set stop loss if provided
             sl_order_id = None
             if trade_signal.stop_loss:

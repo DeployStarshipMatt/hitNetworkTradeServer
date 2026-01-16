@@ -262,10 +262,10 @@ class BloFinClient:
         # Round to nearest lot size increment
         rounded = round(size / lot_size) * lot_size
         
-        # Ensure minimum size
+        # Ensure minimum size - if below minimum, FAIL (don't auto-bump)
         if rounded < min_size:
-            rounded = min_size
-            logger.warning(f"Position size {size} below minimum {min_size}, using {rounded}")
+            logger.error(f"❌ Position size {size} below minimum {min_size} for {symbol}")
+            raise ValueError(f"Position size {size} is below exchange minimum {min_size} for {symbol}. Increase risk amount or choose a different symbol.")
         
         # For lot sizes >= 1, return as integer
         if lot_size >= 1:
@@ -312,7 +312,7 @@ class BloFinClient:
         logger.info(f"Placing market order: {api_side} {rounded_size} {symbol} (requested: {size})")
         
         try:
-            response = self._request("POST", "/api/v1/trade/order", payload)
+            response = self._request("POST", "/api/v1/copytrading/trade/place-order", payload)
             self.stats['orders_placed'] += 1
             
             # Response is a list of orders, get the first one
@@ -421,22 +421,36 @@ class BloFinClient:
         """
         # Round size according to instrument specifications
         rounded_size = self.round_size_to_lot(symbol, size)
-        # TPSL orders require integer contract quantities
-        rounded_size = int(round(rounded_size))
+        
+        # TPSL endpoint requires INTEGER contracts (unlike market orders)
+        # Round UP to ensure full position coverage
+        import math
+        rounded_size = math.ceil(rounded_size)
         
         if rounded_size == 0:
             raise ValueError(f"Position size too small for {symbol}: {size} contracts rounds to 0")
         
+        # Round trigger price to avoid floating point precision issues
+        trigger_price = round(trigger_price, 6)
+        
+        # Determine positionSide based on the position direction
+        # For stop loss, if side is sell, position is long; if side is buy, position is short
+        if side.lower() in ["sell", "short"]:
+            position_side = "long"
+        else:
+            position_side = "short"
+        
         payload = {
             "instId": symbol,
             "marginMode": trade_mode,
-            "positionSide": "net",
-            "slTriggerPrice": str(trigger_price),
+            "positionSide": position_side,  # long or short based on position
+            "slTriggerPrice": str(int(trigger_price)),
             "tpTriggerPrice": "",
             "size": str(rounded_size)
         }
         
         logger.info(f"Setting stop loss: {symbol} @ {trigger_price} (size: {rounded_size}, requested: {size})")
+        logger.info(f"🔍 SL PAYLOAD: {payload}")
         
         try:
             response = self._request("POST", "/api/v1/copytrading/trade/place-tpsl-by-contract", payload)
@@ -475,24 +489,14 @@ class BloFinClient:
         # Split position equally across all TPs
         num_tps = len(tp_prices)
         
-        # Ensure total_size is an integer for TPSL orders
-        total_size_int = int(round(total_size))
+        # Split total size evenly across TPs (can be fractional)
+        size_per_tp = total_size / num_tps
         
-        # Split evenly using integer division
-        size_per_tp = total_size_int // num_tps
-        
-        # Calculate remainder for last TP
-        remainder = total_size_int % num_tps
-        
-        # Last TP gets the base split plus any remainder
-        last_tp_size = size_per_tp + remainder
-        
-        logger.info(f"Splitting {total_size_int} contracts across {num_tps} TPs: {size_per_tp} each, last TP: {last_tp_size}")
+        logger.info(f"Splitting {total_size} contracts across {num_tps} TPs: {size_per_tp} each")
         
         results = []
         for i, tp_price in enumerate(tp_prices, 1):
-            # Use remainder for last TP to ensure complete closure
-            tp_size = last_tp_size if i == num_tps else size_per_tp
+            tp_size = size_per_tp
             
             try:
                 result = self.set_take_profit(
@@ -530,22 +534,36 @@ class BloFinClient:
         """
         # Round size according to instrument specifications
         rounded_size = self.round_size_to_lot(symbol, size)
-        # TPSL orders require integer contract quantities
-        rounded_size = int(round(rounded_size))
+        
+        # TPSL endpoint requires INTEGER contracts (unlike market orders)
+        import math
+        rounded_size = math.ceil(rounded_size)
         
         if rounded_size == 0:
             raise ValueError(f"Position size too small for {symbol}: {size} contracts rounds to 0")
         
+        # Round trigger price to prevent floating point precision issues
+        # BloFin rejects prices like 96424.99999999999
+        trigger_price = round(trigger_price, 6)
+        
+        # Determine positionSide based on the position direction
+        # For take profit, if side is sell, position is long; if side is buy, position is short
+        if side.lower() in ["sell", "short"]:
+            position_side = "long"
+        else:
+            position_side = "short"
+        
         payload = {
             "instId": symbol,
             "marginMode": trade_mode,
-            "positionSide": "net",
-            "tpTriggerPrice": str(trigger_price),
+            "positionSide": position_side,  # long or short based on position
+            "tpTriggerPrice": str(int(trigger_price)),
             "slTriggerPrice": "",
             "size": str(rounded_size)
         }
         
         logger.info(f"Setting take profit: {symbol} @ {trigger_price} (size: {rounded_size}, requested: {size})")
+        logger.info(f"🔍 TP PAYLOAD: {payload}")
         
         try:
             response = self._request("POST", "/api/v1/copytrading/trade/place-tpsl-by-contract", payload)
@@ -555,6 +573,25 @@ class BloFinClient:
         
         except Exception as e:
             logger.error(f"❌ Failed to set take profit: {e}")
+            raise
+    
+    def get_ticker(self, symbol: str) -> Dict[str, Any]:
+        """
+        Get current market ticker for a symbol.
+        
+        Args:
+            symbol: Trading pair (e.g., BTC-USDT)
+            
+        Returns:
+            Ticker data with current price
+        """
+        try:
+            response = self._request("GET", f"/api/v1/market/ticker?instId={symbol}")
+            if response and 'data' in response and len(response['data']) > 0:
+                return response['data'][0]
+            return {}
+        except Exception as e:
+            logger.error(f"Failed to get ticker for {symbol}: {e}")
             raise
     
     def get_account_balance(self) -> Dict[str, Any]:
