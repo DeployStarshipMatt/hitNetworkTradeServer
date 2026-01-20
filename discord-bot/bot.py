@@ -144,7 +144,18 @@ class TradingBot(commands.Bot):
                         pnl_emoji = "🟢" if pnl >= 0 else "🔴"
                         positions_text += f"{pnl_emoji} **{pos['symbol']}** {side}\n"
                         positions_text += f"   Size: {size} | Entry: ${entry:.4f}\n"
-                        positions_text += f"   P&L: ${pnl:.2f} ({pnl_pct:+.2f}%)\n\n"
+                        positions_text += f"   P&L: ${pnl:.2f} ({pnl_pct:+.2f}%)\n"
+                        
+                        # Add TP/SL if available
+                        tp_levels = pos.get('tp_levels', [])
+                        sl_price = pos.get('sl_price')
+                        if tp_levels:
+                            tp_str = " | ".join([f"${tp:.4f}" for tp in sorted(tp_levels)])
+                            positions_text += f"   🎯 TP: {tp_str}\n"
+                        if sl_price:
+                            positions_text += f"   🛑 SL: ${sl_price:.4f}\n"
+                        
+                        positions_text += "\n"
             
             if not positions_text:
                 positions_text = "No open positions"
@@ -409,6 +420,7 @@ async def cmd_update(ctx):
                     # Display TP/SL if available
                     tp_levels = pos.get('tp_levels', [])
                     sl_price = pos.get('sl_price')
+                    logger.info(f"Position {symbol}: tp_levels={tp_levels}, sl_price={sl_price}")
                     if tp_levels or sl_price:
                         if tp_levels:
                             tp_str = " | ".join([f"${tp:.4f}" for tp in sorted(tp_levels)])

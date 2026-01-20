@@ -540,7 +540,14 @@ class BloFinClient:
         try:
             response = self._request("POST", "/api/v1/copytrading/trade/place-tpsl-by-contract", payload)
             algo_id = response.get('algoId')
-            logger.info(f"✅ TP/SL pair set: {algo_id}")
+            
+            # Validate that we got a valid order ID
+            if not algo_id or algo_id == 'None' or algo_id == '':
+                logger.error(f"❌ TP/SL placement returned invalid algoId: {algo_id}")
+                logger.error(f"   Full API response: {response}")
+                raise Exception(f"TP/SL order placement failed - no valid algoId returned (got: {algo_id})")
+            
+            logger.info(f"✅ TP/SL pair set successfully: algoId={algo_id}")
             return {'order_id': algo_id, 'type': 'tpsl_pair', 'tp': tp_price, 'sl': sl_price, 'size': rounded_size}
         
         except Exception as e:

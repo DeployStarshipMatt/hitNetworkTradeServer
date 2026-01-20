@@ -334,16 +334,27 @@ def send_discord_notification(
         # If error message, send error notification
         if error_message:
             embed = {
-                "title": f"⚠️ Trade Rejected: {symbol}",
+                "title": f"🚨 CRITICAL: Position Unprotected - {symbol}",
                 "description": error_message,
-                "color": 15844367,  # Yellow/orange for warning
+                "color": 16711680,  # Red for critical
                 "fields": [
                     {"name": "Symbol", "value": symbol, "inline": True},
                     {"name": "Side", "value": side.upper(), "inline": True},
+                    {"name": "Entry Price", "value": f"${entry_price:.4f}" if entry_price else "N/A", "inline": True},
+                    {"name": "Position Size", "value": f"{position_size:.4f} contracts", "inline": True},
+                    {"name": "Leverage", "value": f"{leverage}x", "inline": True},
                 ],
                 "timestamp": datetime.utcnow().isoformat(),
-                "footer": {"text": "BloFin Trading Bot"}
+                "footer": {"text": "⚠️ URGENT: Manual intervention required!"}
             }
+            
+            # Send the error notification and return
+            payload = {"embeds": [embed]}
+            response = requests.post(DISCORD_NOTIFICATION_WEBHOOK, json=payload, timeout=10)
+            response.raise_for_status()
+            logger.info("🚨 Critical alert sent to Discord")
+            return
+            
         else:
             # Determine emoji based on side
             side_emoji = "📈" if side.lower() in ["long", "buy"] else "📉"
@@ -592,90 +603,125 @@ async def execute_trade(
             import time
             time.sleep(1.5)
             
-            # Prepare TP prices (default to +5%, +10%, +15% if not provided)
-            tp_prices = [
-                trade_signal.take_profit,
-                trade_signal.take_profit_2,
-                trade_signal.take_profit_3
-            ]
-            # Filter out None values
-            tp_prices = [tp for tp in tp_prices if tp is not None]
+            # Use TP2 as primary TP level (ignore TP1 and TP3)
+            tp_price = trade_signal.take_profit_2 or trade_signal.take_profit
             
-            # Default TP levels if not provided
-            if len(tp_prices) < 3 and trade_signal.entry_price:
-                entry = trade_signal.entry_price
-                if len(tp_prices) == 0:
-                    tp_prices = [entry * 1.05, entry * 1.10, entry * 1.15]
-                elif len(tp_prices) == 1:
-                    tp_prices.extend([entry * 1.10, entry * 1.15])
-                elif len(tp_prices) == 2:
-                    tp_prices.append(entry * 1.15)
+            # Default to +10% if no TP provided
+            if not tp_price and trade_signal.entry_price:
+                tp_price = trade_signal.entry_price * 1.10
             
-            # Split position into 3 parts for TPs
-            if len(tp_prices) >= 3:
-                size_per_part = position_size / 3
-                tp_sizes = [
-                    round(size_per_part, 1),
-                    round(size_per_part, 1),
-                    position_size - 2 * round(size_per_part, 1)  # Remainder
-                ]
-            elif len(tp_prices) == 2:
-                tp_sizes = [position_size / 2, position_size / 2]
-            else:
-                tp_sizes = [position_size]
+            logger.info(f"📊 Setting up single TP @ ${tp_price}")
             
-            logger.info(f"📊 Setting up {len(tp_prices)} TP levels: {tp_sizes}")
-            
-            # Determine closing side (opposite of entry)
-            close_side = "sell" if trade_signal.side in ["long", "buy"] else "buy"
-            
-            # Place reduce-only limit orders for each TP level
-            tp_order_ids = []
-            for i, (tp_price, tp_size) in enumerate(zip(tp_prices, tp_sizes), 1):
-                try:
-                    tp_result = blofin_client.place_reduce_only_limit_order(
-                        symbol=trade_signal.symbol,
-                        side=close_side,
-                        size=tp_size,
-                        price=tp_price,
-                        trade_mode=DEFAULT_TRADE_MODE,
-                        position_side="net"
-                    )
-                    tp_order_id = tp_result.get('order_id')
-                    tp_order_ids.append(tp_order_id)
-                    logger.info(f"✅ TP{i}: {tp_size} contracts @ ${tp_price} (order: {tp_order_id})")
-                    
-                    # Track TP order
-                    if order_monitor and tp_order_id:
-                        order_monitor.track_order(
+            # Set TP/SL using the dedicated endpoint with retry logic
+            tpsl_set_successfully = False
+            if tp_price and trade_signal.stop_loss:
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        if attempt > 0:
+                            logger.info(f"🔄 Retry attempt {attempt + 1}/{max_retries} for TP/SL placement...")
+                            time.sleep(2 * attempt)  # Exponential backoff: 2s, 4s
+                        
+                        sl_result = blofin_client.set_tpsl_pair(
                             symbol=trade_signal.symbol,
-                            order_id=tp_order_id,
-                            order_type=f'TP{i}',
-                            trigger_price=tp_price,
-                            size=tp_size,
-                            side=close_side,
-                            entry_price=trade_signal.entry_price
+                            tp_price=tp_price,
+                            sl_price=trade_signal.stop_loss,
+                            size="-1",  # Full position
+                            trade_mode=DEFAULT_TRADE_MODE
                         )
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to set TP{i}: {e}")
-            
-            # Set stop-loss using TP/SL endpoint (for entire position)
-            if trade_signal.stop_loss:
-                try:
-                    # Use set_tpsl_pair with a very low TP (won't hit) to set SL only
-                    # Actually, let's use the SL trigger endpoint directly
-                    sl_payload = {
-                        "instId": trade_signal.symbol,
-                        "marginMode": DEFAULT_TRADE_MODE,
-                        "positionSide": "net",
-                        "slTriggerPrice": str(trade_signal.stop_loss),
-                        "tpTriggerPrice": str(tp_prices[0]),  # Use first TP as placeholder
-                        "size": "-1"  # Full position
-                    }
-                    sl_result = blofin_client._request("POST", "/api/v1/copytrading/trade/place-tpsl-by-contract", sl_payload)
-                    logger.info(f"✅ Stop-loss set @ ${trade_signal.stop_loss} (full position)")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to set stop-loss: {e}")
+                        
+                        # If we got here, it succeeded
+                        algo_id = sl_result.get('order_id')
+                        logger.info(f"✅ TP/SL set successfully: TP @ ${tp_price}, SL @ ${trade_signal.stop_loss} (algoId: {algo_id})")
+                        tpsl_set_successfully = True
+                        break  # Success, exit retry loop
+                        
+                    except Exception as e:
+                        error_str = str(e)
+                        logger.error(f"❌ Attempt {attempt + 1}/{max_retries} failed to set TP/SL: {e}")
+                        
+                        # If we got error 200108 (already exists), the TP/SL was actually placed!
+                        # This happens when first attempt gets invalid response but order was created
+                        if "200108" in error_str or "already a take-profit/stop-loss" in error_str:
+                            logger.warning("⚠️ Error 200108 detected - verifying if TP/SL exists...")
+                            time.sleep(1)  # Give API time to settle
+                            
+                            try:
+                                # Check if TP/SL actually exists
+                                pending_tpsl = blofin_client.get_pending_tpsl(trade_signal.symbol)
+                                if pending_tpsl and len(pending_tpsl) > 0:
+                                    for order in pending_tpsl:
+                                        tp_trigger = order.get('tpTriggerPrice')
+                                        sl_trigger = order.get('slTriggerPrice')
+                                        if tp_trigger and sl_trigger:
+                                            logger.info(f"✅ Verified TP/SL exists: TP=${tp_trigger}, SL=${sl_trigger}")
+                                            tpsl_set_successfully = True
+                                            break  # TP/SL confirmed, exit retry loop
+                            except Exception as verify_error:
+                                logger.error(f"Failed to verify TP/SL: {verify_error}")
+                            
+                            if tpsl_set_successfully:
+                                break  # Exit retry loop, TP/SL confirmed
+                        
+                        if attempt == max_retries - 1:  # Last attempt failed
+                            # Only send alert if we couldn't verify TP/SL exists
+                            if not tpsl_set_successfully:
+                                logger.critical(f"🚨 CRITICAL: Failed to set TP/SL after {max_retries} attempts!")
+                                logger.critical(f"🚨 Position {trade_signal.symbol} is UNPROTECTED!")
+                            # Send urgent Discord alert
+                            send_discord_notification(
+                                symbol=trade_signal.symbol,
+                                side=trade_signal.side,
+                                entry_price=trade_signal.entry_price,
+                                stop_loss=trade_signal.stop_loss,
+                                take_profit=tp_price,
+                                position_size=position_size,
+                                leverage=leverage,
+                                order_id=order_id,
+                                position_value=position_size * (trade_signal.entry_price or 0),
+                                error_message=f"⚠️ POSITION OPENED BUT TP/SL FAILED TO SET!\n\nPosition is UNPROTECTED - manual intervention required!\n\nError: {str(e)}\n\nPlease set TP/SL manually ASAP:",
+                                take_profit_2=trade_signal.take_profit_2,
+                                take_profit_3=trade_signal.take_profit_3
+                            )
+            elif tp_price:
+                logger.warning("⚠️ No stop-loss provided, only TP will be set")
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        if attempt > 0:
+                            logger.info(f"🔄 Retry attempt {attempt + 1}/{max_retries} for TP placement...")
+                            time.sleep(2 * attempt)
+                        
+                        # Set TP with a very low SL as placeholder
+                        placeholder_sl = tp_price * 0.5 if trade_signal.side in ["long", "buy"] else tp_price * 1.5
+                        sl_result = blofin_client.set_tpsl_pair(
+                            symbol=trade_signal.symbol,
+                            tp_price=tp_price,
+                            sl_price=placeholder_sl,
+                            size="-1",
+                            trade_mode=DEFAULT_TRADE_MODE
+                        )
+                        algo_id = sl_result.get('order_id')
+                        logger.info(f"✅ TP set @ ${tp_price} (no SL, algoId: {algo_id})")
+                        tpsl_set_successfully = True
+                        break
+                        
+                    except Exception as e:
+                        logger.error(f"❌ Attempt {attempt + 1}/{max_retries} failed to set TP: {e}")
+                        if attempt == max_retries - 1:
+                            logger.critical(f"🚨 CRITICAL: Failed to set TP after {max_retries} attempts!")
+                            send_discord_notification(
+                                symbol=trade_signal.symbol,
+                                side=trade_signal.side,
+                                entry_price=trade_signal.entry_price,
+                                stop_loss=None,
+                                take_profit=tp_price,
+                                position_size=position_size,
+                                leverage=leverage,
+                                order_id=order_id,
+                                position_value=position_size * (trade_signal.entry_price or 0),
+                                error_message=f"⚠️ POSITION OPENED BUT TP FAILED TO SET!\n\nError: {str(e)}\n\nManual intervention required!"
+                            )
             
             # Send Discord notification immediately with all trade details
             position_value = position_size * (trade_signal.entry_price or 0)
