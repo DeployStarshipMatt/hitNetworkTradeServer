@@ -481,7 +481,6 @@ def main():
         )
         return
 
-
     # Create bot instance
     bot = TradingBot()
     
