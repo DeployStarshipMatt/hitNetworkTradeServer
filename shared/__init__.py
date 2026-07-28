@@ -8,8 +8,10 @@ from .models import (
     TradeStatus,
     HealthCheck
 )
+from .authz import is_authorized_signal_poster
 
 __all__ = [
+    "is_authorized_signal_poster",
     "TradeSignal",
     "TradeResponse",
     "TradeSide",
