@@ -47,15 +47,40 @@ nano /opt/hitNetworkAutomation/.env
 
 Add your actual credentials:
 ```env
-DISCORD_TOKEN=your_actual_discord_token
+DISCORD_BOT_TOKEN=your_actual_discord_token
 DISCORD_CHANNEL_ID=your_actual_channel_id
+
+# REQUIRED - shared secret between bot and server, identical values.
+# Generate with: openssl rand -hex 32
+API_KEY=your_actual_random_secret
+TRADING_SERVER_API_KEY=your_actual_random_secret
+
+# REQUIRED - at least one. Who may post signals that become live orders.
+ALLOWED_USER_IDS=123456789012345678,234567890123456789
+REQUIRED_ROLE_NAME=
+
 BLOFIN_API_KEY=your_actual_api_key
 BLOFIN_SECRET_KEY=your_actual_secret_key
 BLOFIN_PASSPHRASE=your_actual_passphrase
 BLOFIN_BASE_URL=https://openapi.blofin.com
+
+# Bind loopback only - both services run on this droplet.
+HOST=127.0.0.1
+PORT=8000
+TRADING_SERVER_URL=http://127.0.0.1:8000
 ```
 
 Save and exit (Ctrl+X, then Y, then Enter)
+
+**Both services fail closed on missing configuration:**
+
+| Missing | Result |
+|---------|--------|
+| `API_KEY` | Trading server exits at startup; every request would be refused with 503 |
+| `ALLOWED_USER_IDS` and `REQUIRED_ROLE_NAME` both empty | Discord bot exits at startup; no poster is authorized |
+
+`TRADING_SERVER_API_KEY` must equal `API_KEY` or every signal the bot forwards
+comes back 401.
 
 ### 6. Start the services
 ```bash
@@ -148,21 +173,34 @@ systemctl restart trading-bot trading-server
 - `/etc/systemd/system/trading-bot.service` - Discord bot service
 - `/etc/systemd/system/trading-server.service` - Trading server service
 
-## Firewall (Optional)
+## Firewall
 
-If you need to access trading server from outside:
+Do **not** expose port 8000. The trading server places real orders; the
+Discord bot reaches it over loopback on the same droplet.
+
 ```bash
-# Allow SSH
+# Allow SSH only
 ufw allow 22/tcp
-
-# Allow trading server port if needed externally
-ufw allow 8000/tcp
 
 # Enable firewall
 ufw enable
 ```
 
-**Note:** For this bot, you typically don't need external access - everything runs locally on the droplet.
+If you genuinely need external access, keep `HOST=127.0.0.1` and reach the
+service through an SSH tunnel:
+
+```bash
+ssh -L 8000:127.0.0.1:8000 root@YOUR_DROPLET_IP
+```
+
+Only as a last resort, restrict the port to a known source address instead of
+opening it to the internet:
+
+```bash
+ufw allow from YOUR_OFFICE_IP to any port 8000 proto tcp
+```
+
+**Note:** For this bot, you don't need external access - everything runs locally on the droplet.
 
 ## Quick Reference
 
