@@ -45,8 +45,22 @@ if [ ! -f .env ]; then
     echo "⚙️  Creating .env file template..."
     cat > .env << 'EOF'
 # Discord Configuration
-DISCORD_TOKEN=your_discord_bot_token_here
+DISCORD_BOT_TOKEN=your_discord_bot_token_here
 DISCORD_CHANNEL_ID=your_channel_id_here
+
+# REQUIRED - signal poster authorization (fails closed).
+# Set at least one of these or the bot refuses to start and no signal is
+# ever acted on. Signals from the monitored channel place real orders on
+# the copy-trading master account, which followers auto-mirror.
+ALLOWED_USER_IDS=comma_separated_discord_user_ids_here
+REQUIRED_ROLE_NAME=
+
+# REQUIRED - shared secret between the bot and the trading server.
+# The trading server refuses to start without API_KEY, and refuses every
+# request while it is unset. Both values below MUST be identical.
+# Generate one with: openssl rand -hex 32
+API_KEY=generate_a_random_secret_here
+TRADING_SERVER_API_KEY=same_value_as_API_KEY
 
 # Blofin API Configuration
 BLOFIN_API_KEY=your_blofin_api_key_here
@@ -55,11 +69,19 @@ BLOFIN_PASSPHRASE=your_blofin_passphrase_here
 BLOFIN_BASE_URL=https://openapi.blofin.com
 
 # Trading Server Configuration
+HOST=127.0.0.1
+PORT=8000
+TRADING_SERVER_URL=http://127.0.0.1:8000
 TRADING_SERVER_HOST=localhost
 TRADING_SERVER_PORT=8000
 EOF
     echo "⚠️  IMPORTANT: Edit .env file with your actual credentials!"
     echo "    Run: nano /opt/hitNetworkAutomation/.env"
+    echo "    REQUIRED before the services will run:"
+    echo "      - API_KEY and TRADING_SERVER_API_KEY (identical values)"
+    echo "      - ALLOWED_USER_IDS and/or REQUIRED_ROLE_NAME"
+    echo "    The trading server refuses to start without API_KEY, and the"
+    echo "    bot refuses to start without a signal poster filter."
 fi
 
 # Create systemd service files

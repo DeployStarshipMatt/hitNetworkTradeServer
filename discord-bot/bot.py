@@ -19,6 +19,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from parser import SignalParser
 from trading_client import TradingServerClient
 from shared.models import TradeSignal
+from shared.authz import is_authorized_signal_poster
 import aiohttp
 
 # Load environment variables (looks in current directory for .env)
@@ -33,7 +34,7 @@ TRADING_SERVER_API_KEY = os.getenv('TRADING_SERVER_API_KEY')
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 LOG_FILE = os.getenv('LOG_FILE', 'discord_bot.log')
 
-# Optional filters
+# Signal poster filters - at least one is REQUIRED (authorization fails closed)
 ALLOWED_USER_IDS = os.getenv('ALLOWED_USER_IDS', '').split(',')
 ALLOWED_USER_IDS = [int(uid) for uid in ALLOWED_USER_IDS if uid.strip()]
 REQUIRED_ROLE_NAME = os.getenv('REQUIRED_ROLE_NAME')
@@ -336,27 +337,25 @@ class TradingBot(commands.Bot):
         """
         Check if user is authorized to post signals.
         
+        Fails closed: if neither ALLOWED_USER_IDS nor REQUIRED_ROLE_NAME is
+        configured, nobody is authorized. A signal accepted here places a real
+        order on the copy-trading master account.
+
         Args:
             user: Discord user or member
-            
+
         Returns:
             True if authorized
         """
-        # If no filters configured, allow all
-        if not ALLOWED_USER_IDS and not REQUIRED_ROLE_NAME:
-            return True
-        
-        # Check user ID filter
-        if ALLOWED_USER_IDS and user.id not in ALLOWED_USER_IDS:
-            return False
-        
-        # Check role filter (only for guild members)
-        if REQUIRED_ROLE_NAME and isinstance(user, discord.Member):
-            has_role = any(role.name == REQUIRED_ROLE_NAME for role in user.roles)
-            if not has_role:
-                return False
-        
-        return True
+        # Non-guild users (DMs, webhooks) carry no roles.
+        role_names = [role.name for role in getattr(user, 'roles', [])]
+
+        return is_authorized_signal_poster(
+            user_id=user.id,
+            role_names=role_names,
+            allowed_user_ids=ALLOWED_USER_IDS,
+            required_role_name=REQUIRED_ROLE_NAME
+        )
 
 
 # Define commands as standalone functions (not class methods)
@@ -471,7 +470,17 @@ def main():
     if not TRADING_SERVER_API_KEY:
         logger.error("❌ TRADING_SERVER_API_KEY not set in .env file")
         return
-    
+
+    # Authorization fails closed, so an unconfigured filter means the bot would
+    # ignore every signal. Refuse to start with a clear error instead.
+    if not ALLOWED_USER_IDS and not REQUIRED_ROLE_NAME:
+        logger.error(
+            "❌ No signal poster filter configured. Set ALLOWED_USER_IDS "
+            "and/or REQUIRED_ROLE_NAME in .env - signals from this channel "
+            "place real orders on the copy-trading master account."
+        )
+        return
+
     # Create bot instance
     bot = TradingBot()
     
