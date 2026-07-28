@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Security, Depends
 from fastapi.security import APIKeyHeader
 from fastapi.responses import JSONResponse
 import requests
+import hmac
 import logging
 import os
 from dotenv import load_dotenv
@@ -87,13 +88,34 @@ app = FastAPI(
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
-def verify_api_key(api_key: str = Security(api_key_header)):
-    """Verify API key from request."""
+def require_api_key_configured():
+    """
+    Fail closed on configuration.
+
+    This service places real orders on BloFin and binds 0.0.0.0, so it must
+    never run without a shared secret. Raises RuntimeError when API_KEY is
+    unset so startup aborts instead of serving unauthenticated traffic.
+    """
     if not API_KEY:
-        logger.warning("API_KEY not configured - allowing all requests")
-        return True
-    
-    if api_key != API_KEY:
+        raise RuntimeError(
+            "API_KEY is not set. The trading server places real orders and "
+            "refuses to start unauthenticated. Set API_KEY in .env (it must "
+            "match TRADING_SERVER_API_KEY used by the Discord bot)."
+        )
+
+
+def verify_api_key(api_key: str = Security(api_key_header)):
+    """Verify API key from request. Fails closed when API_KEY is not configured."""
+    if not API_KEY:
+        logger.critical("API_KEY not configured - refusing every request")
+        raise HTTPException(
+            status_code=503,
+            detail="Server authentication is not configured"
+        )
+
+    if not api_key or not hmac.compare_digest(
+        api_key.encode('utf-8'), API_KEY.encode('utf-8')
+    ):
         raise HTTPException(status_code=401, detail="Invalid API Key")
     return True
 
@@ -177,7 +199,10 @@ def order_monitor_worker():
 async def startup_event():
     """Initialize services on startup."""
     global blofin_client, order_monitor
-    
+
+    # Fail closed before anything else runs: no shared secret, no service.
+    require_api_key_configured()
+
     logger.info("🚀 Starting Trading Server...")
     logger.info(f"📡 BloFin API: {BLOFIN_BASE_URL}")
     
@@ -902,9 +927,12 @@ def main():
     import uvicorn
     
     # Validate critical configuration
-    if not API_KEY:
-        logger.warning("⚠️ API_KEY not set - authentication disabled!")
-    
+    try:
+        require_api_key_configured()
+    except RuntimeError as e:
+        logger.critical(f"❌ {e}")
+        sys.exit(1)
+
     logger.info(f"🚀 Starting server on {HOST}:{PORT}")
     
     uvicorn.run(
